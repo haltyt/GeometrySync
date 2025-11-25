@@ -73,8 +73,32 @@ namespace GeometrySync
             }
 
             // Assign material from MeshRenderer to GPUInstanceRenderer
+            // Phase 3A: Optionally use InstancedIndirect shader if enabled
             if (_meshRenderer.sharedMaterial != null)
             {
+                // Phase 3A: Check if we should use the custom indirect shader
+                if (_instanceRenderer.useIndirectRendering &&
+                    _instanceRenderer.useCustomIndirectShader &&
+                    SystemInfo.supportsComputeShaders)
+                {
+                    Shader indirectShader = Shader.Find("GeometrySync/InstancedIndirect");
+                    if (indirectShader != null)
+                    {
+                        // Change shader on existing material (preserves material settings)
+                        _meshRenderer.sharedMaterial.shader = indirectShader;
+                        Debug.Log("[GeometrySyncManager] Changed material shader to InstancedIndirect for Phase 3A rendering");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[GeometrySyncManager] InstancedIndirect shader not found, using material's current shader");
+                    }
+                }
+                else if (_instanceRenderer.useIndirectRendering)
+                {
+                    Debug.Log($"[GeometrySyncManager] Using existing material shader: {_meshRenderer.sharedMaterial.shader.name}");
+                }
+
+                // Use the same material for instance rendering
                 _instanceRenderer.instanceMaterial = _meshRenderer.sharedMaterial;
 
                 // Enable GPU Instancing on the material if not already enabled
