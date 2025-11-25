@@ -18,6 +18,17 @@ namespace GeometrySync
     }
 
     /// <summary>
+    /// Instance data container for GPU instancing
+    /// </summary>
+    public struct InstanceData
+    {
+        public uint MeshId;              // Hash of base mesh name
+        public Matrix4x4[] Transforms;   // Instance transform matrices
+
+        public int InstanceCount => Transforms?.Length ?? 0;
+    }
+
+    /// <summary>
     /// Deserializes binary mesh data from Blender
     /// </summary>
     public static class MeshDeserializer
@@ -127,6 +138,73 @@ namespace GeometrySync
             // This will be implemented in Phase 3 for better performance
             // Currently just calls the standard Deserialize method
             return Deserialize(data);
+        }
+
+        /// <summary>
+        /// Deserialize instance data from binary format (Phase 2: GPU Instancing)
+        ///
+        /// Binary format:
+        /// - Header: mesh_id (uint32), instance_count (uint32)
+        /// - Transform data: array of 4x4 matrices (float32, 16 values per matrix)
+        /// </summary>
+        public static InstanceData DeserializeInstanceData(byte[] data)
+        {
+            if (data == null || data.Length < 8)
+            {
+                throw new ArgumentException("Invalid instance data: too small");
+            }
+
+            int offset = 0;
+
+            // Read header
+            uint meshId = BitConverter.ToUInt32(data, offset);
+            offset += 4;
+
+            uint instanceCount = BitConverter.ToUInt32(data, offset);
+            offset += 4;
+
+            // Sanity check: prevent memory issues
+            if (instanceCount > 100_000)
+            {
+                throw new ArgumentException($"Instance count too large: {instanceCount} (max 100,000)");
+            }
+
+            // Expected data size: 8 (header) + instanceCount * 16 * 4 (64 bytes per matrix)
+            int expectedSize = 8 + (int)instanceCount * 64;
+            if (data.Length < expectedSize)
+            {
+                throw new ArgumentException(
+                    $"Invalid instance data size: expected {expectedSize}, got {data.Length}");
+            }
+
+            // Read transform matrices (16 floats per matrix)
+            Matrix4x4[] transforms = new Matrix4x4[instanceCount];
+
+            for (int i = 0; i < instanceCount; i++)
+            {
+                // Read 16 floats for 4x4 matrix
+                float[] m = new float[16];
+                for (int j = 0; j < 16; j++)
+                {
+                    m[j] = BitConverter.ToSingle(data, offset);
+                    offset += 4;
+                }
+
+                // Construct Matrix4x4 from column-major data
+                // Unity uses column-major order: Matrix4x4(column0, column1, column2, column3)
+                transforms[i] = new Matrix4x4(
+                    new Vector4(m[0], m[1], m[2], m[3]),      // column 0
+                    new Vector4(m[4], m[5], m[6], m[7]),      // column 1
+                    new Vector4(m[8], m[9], m[10], m[11]),    // column 2
+                    new Vector4(m[12], m[13], m[14], m[15])   // column 3
+                );
+            }
+
+            return new InstanceData
+            {
+                MeshId = meshId,
+                Transforms = transforms
+            };
         }
     }
 }

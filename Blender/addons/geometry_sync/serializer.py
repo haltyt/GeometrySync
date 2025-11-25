@@ -24,6 +24,41 @@ def convert_to_unity_space(positions: np.ndarray) -> np.ndarray:
     return unity_positions
 
 
+def convert_matrix_to_unity_space(matrices: np.ndarray) -> np.ndarray:
+    """
+    Convert Blender transform matrices to Unity space
+    Blender: Z-up, right-handed
+    Unity: Y-up, left-handed
+
+    Args:
+        matrices: Array of shape (N, 4, 4) with Blender transform matrices
+
+    Returns:
+        Array with Unity transform matrices
+    """
+    unity_matrices = matrices.copy()
+
+    # Convert each matrix by swapping rows and columns appropriately
+    # Blender: [x, y, z] -> Unity: [x, z, -y]
+    for i in range(len(matrices)):
+        m = matrices[i]
+
+        # Create new matrix with swapped and flipped axes
+        # Row 0 (X-axis): stays the same but swap Y/Z components
+        # Row 1 (Y-axis): becomes Z-axis (swap Y/Z, flip new Z)
+        # Row 2 (Z-axis): becomes -Y-axis (swap Y/Z, flip new Z)
+        # Translation: swap Y/Z, flip new Z
+
+        unity_matrices[i] = np.array([
+            [m[0, 0],  m[0, 2], -m[0, 1], m[0, 3]],  # X-axis row
+            [m[2, 0],  m[2, 2], -m[2, 1], m[2, 3]],  # Z-axis row (becomes Y in Unity)
+            [-m[1, 0], -m[1, 2],  m[1, 1], -m[1, 3]], # -Y-axis row (becomes Z in Unity)
+            [0,        0,        0,        1]         # Homogeneous row
+        ], dtype=np.float32)
+
+    return unity_matrices
+
+
 def serialize_mesh(vertices: np.ndarray,
                    normals: np.ndarray,
                    uvs: np.ndarray,
@@ -88,19 +123,26 @@ def serialize_instance_data(mesh_id: int,
 
     Args:
         mesh_id: Identifier for the base mesh
-        transforms: Array of 4x4 transform matrices (N, 4, 4)
+        transforms: Array of 4x4 transform matrices (N, 4, 4) in Blender space
 
     Returns:
         Binary data for instance transforms
     """
     count = len(transforms)
-    transforms = transforms.astype(np.float32)
+
+    # Convert transforms from Blender space to Unity space
+    transforms_unity = convert_matrix_to_unity_space(transforms)
+    transforms_unity = transforms_unity.astype(np.float32)
+
+    # Unity expects column-major matrices, but NumPy stores row-major
+    # Transpose each matrix before serialization
+    transforms_unity_transposed = np.transpose(transforms_unity, (0, 2, 1))
 
     # Header (little-endian)
     header = struct.pack('<I I', mesh_id, count)
 
     # Flatten matrices and convert to bytes
-    matrix_bytes = transforms.tobytes()
+    matrix_bytes = transforms_unity_transposed.tobytes()
 
     return header + matrix_bytes
 

@@ -44,6 +44,11 @@ class GEOMETRYSYNC_PT_MainPanel(bpy.types.Panel):
 
         if scheduler.enabled:
             box.label(text=f"Active: {scheduler.target_fps} FPS", icon='TIME')
+
+            # Manual send button
+            if context.selected_objects:
+                row = box.row()
+                row.operator("geometrysync.send_selected", text="Send Selected Now", icon='EXPORT')
         else:
             box.label(text="Inactive", icon='PAUSE')
 
@@ -77,6 +82,29 @@ class GEOMETRYSYNC_OT_StopServer(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class GEOMETRYSYNC_OT_SendSelected(bpy.types.Operator):
+    """Manually send selected objects to Unity"""
+    bl_idname = "geometrysync.send_selected"
+    bl_label = "Send Selected"
+
+    def execute(self, context):
+        scheduler = handlers.get_scheduler()
+
+        # Mark all selected mesh objects as dirty
+        count = 0
+        for obj in context.selected_objects:
+            if obj.type == 'MESH':
+                scheduler.mark_dirty(obj.name)
+                count += 1
+
+        if count > 0:
+            self.report({'INFO'}, f"Marked {count} object(s) for streaming")
+        else:
+            self.report({'WARNING'}, "No mesh objects selected")
+
+        return {'FINISHED'}
+
+
 def register_properties():
     """Register scene properties"""
     bpy.types.Scene.geometrysync_fps = bpy.props.IntProperty(
@@ -98,6 +126,7 @@ classes = (
     GEOMETRYSYNC_PT_MainPanel,
     GEOMETRYSYNC_OT_StartServer,
     GEOMETRYSYNC_OT_StopServer,
+    GEOMETRYSYNC_OT_SendSelected,
 )
 
 

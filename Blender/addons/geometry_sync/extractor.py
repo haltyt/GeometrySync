@@ -205,7 +205,7 @@ def extract_custom_attributes(obj: bpy.types.Object,
 
 
 def extract_instance_transforms(obj: bpy.types.Object,
-                                depsgraph: bpy.types.Depsgraph) -> Optional[Tuple[int, np.ndarray]]:
+                                depsgraph: bpy.types.Depsgraph) -> Optional[Tuple[str, np.ndarray, Tuple]]:
     """
     Extract instance transforms from Geometry Nodes instances
 
@@ -214,19 +214,56 @@ def extract_instance_transforms(obj: bpy.types.Object,
         depsgraph: Evaluated depsgraph
 
     Returns:
-        Tuple of (mesh_id, transform_matrices) or None if no instances
+        Tuple of (base_mesh_name, transform_matrices, base_mesh_data) or None if no instances
+        - base_mesh_name: Name of the base mesh being instanced
+        - transform_matrices: NumPy array of shape (N, 4, 4) with transform matrices
+        - base_mesh_data: Tuple of (vertices, normals, uvs, indices) for the base mesh
     """
-    # Check if object has Geometry Nodes modifier with instances
-    for modifier in obj.modifiers:
-        if modifier.type == 'NODES':
-            # Get evaluated object
-            obj_eval = obj.evaluated_get(depsgraph)
+    # Check if object has Geometry Nodes modifier
+    has_geo_nodes = any(mod.type == 'NODES' for mod in obj.modifiers)
+    if not has_geo_nodes:
+        print(f"[extract_instance_transforms] {obj.name} has no Geometry Nodes modifier")
+        return None
 
-            # Check for instances in depsgraph
-            # This is a simplified version - full implementation would need
-            # to access instance collection from Geometry Nodes output
+    instances = []
+    base_object = None
 
-            # For now, return None - instances will be handled in Phase 2
-            return None
+    print(f"[extract_instance_transforms] Checking {obj.name} for instances...")
 
-    return None
+    # Iterate through depsgraph instances
+    # The depsgraph contains all evaluated object instances
+    instance_count = 0
+    for instance in depsgraph.object_instances:
+        instance_count += 1
+        # Check if this instance belongs to our object
+        # instance.parent is the object that generated the instance
+        if instance.parent and instance.parent.original == obj:
+            print(f"  Found instance from {obj.name}: is_instance={instance.is_instance}")
+            if instance.is_instance:
+                # Get the 4x4 transform matrix (world space)
+                # Convert Blender's Matrix to NumPy array
+                matrix = np.array(instance.matrix_world, dtype=np.float32).reshape(4, 4)
+                instances.append(matrix)
+
+                # Get base object reference (the instanced mesh)
+                if base_object is None and instance.object:
+                    base_object = instance.object.original
+                    print(f"  Base object: {base_object.name if base_object else 'None'}")
+
+    print(f"[extract_instance_transforms] Total depsgraph instances: {instance_count}, Found {len(instances)} instances for {obj.name}")
+
+    if not instances or base_object is None:
+        print(f"[extract_instance_transforms] No instances found or no base object")
+        return None
+
+    # Stack matrices into (N, 4, 4) array
+    transforms = np.stack(instances, axis=0)
+
+    # Extract base mesh data
+    try:
+        base_mesh_data = extract_mesh_data_fast(base_object, depsgraph)
+    except Exception as e:
+        print(f"Failed to extract base mesh for instances: {e}")
+        return None
+
+    return (base_object.name, transforms, base_mesh_data)

@@ -37,9 +37,11 @@ namespace GeometrySync
         private MeshRenderer _meshRenderer;
         private MeshStreamClient _client;
         private MeshReconstructor _reconstructor;
+        private GPUInstanceRenderer _instanceRenderer;
 
         // Statistics
         private int _meshUpdateCount;
+        private int _instanceUpdateCount;
         private float _lastUpdateTime;
         private float _updateInterval;
         private int _lastVertexCount;
@@ -49,6 +51,7 @@ namespace GeometrySync
 
         public bool IsConnected => _client?.IsConnected ?? false;
         public int MeshUpdateCount => _meshUpdateCount;
+        public int InstanceUpdateCount => _instanceUpdateCount;
         public int LastVertexCount => _lastVertexCount;
         public int LastTriangleCount => _lastTriangleCount;
 
@@ -60,6 +63,31 @@ namespace GeometrySync
             // Initialize reconstructor
             _reconstructor = new MeshReconstructor();
             _meshFilter.mesh = _reconstructor.Mesh;
+
+            // Initialize instance renderer (Phase 2: GPU Instancing)
+            _instanceRenderer = GetComponent<GPUInstanceRenderer>();
+            if (_instanceRenderer == null)
+            {
+                _instanceRenderer = gameObject.AddComponent<GPUInstanceRenderer>();
+                Debug.Log("[GeometrySyncManager] Added GPUInstanceRenderer component for Phase 2 instancing support");
+            }
+
+            // Assign material from MeshRenderer to GPUInstanceRenderer
+            if (_meshRenderer.sharedMaterial != null)
+            {
+                _instanceRenderer.instanceMaterial = _meshRenderer.sharedMaterial;
+
+                // Enable GPU Instancing on the material if not already enabled
+                if (!_meshRenderer.sharedMaterial.enableInstancing)
+                {
+                    _meshRenderer.sharedMaterial.enableInstancing = true;
+                    Debug.Log("[GeometrySyncManager] Enabled GPU Instancing on material: " + _meshRenderer.sharedMaterial.name);
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[GeometrySyncManager] No material found on MeshRenderer. Please assign a material for GPU Instancing.");
+            }
 
             // Calculate update interval
             _updateInterval = maxUpdatesPerSecond > 0 ? 1f / maxUpdatesPerSecond : 0f;
@@ -91,6 +119,14 @@ namespace GeometrySync
                 _lastUpdateTime = Time.time;
                 UpdateMesh(meshData);
             }
+
+            // Process instance data (Phase 2: GPU Instancing)
+            if (_client.TryGetInstanceData(out InstanceData instanceData))
+            {
+                Debug.Log($"[GeometrySyncManager] Got instance data: {instanceData.InstanceCount} instances for mesh {instanceData.MeshId}");
+                _lastUpdateTime = Time.time;
+                UpdateInstances(instanceData);
+            }
         }
 
         private void UpdateMesh(MeshData meshData)
@@ -119,6 +155,55 @@ namespace GeometrySync
             catch (System.Exception e)
             {
                 Debug.LogError($"Failed to update mesh: {e}");
+            }
+        }
+
+        private void UpdateInstances(InstanceData instanceData)
+        {
+            try
+            {
+                // Register base mesh if we received it recently
+                // The base mesh should arrive before or with the instance data
+                // We use the reconstructor's mesh as the base mesh for now
+                // In a full implementation, we would maintain a dictionary of meshes by ID
+
+                uint meshId = instanceData.MeshId;
+
+                Debug.Log($"[GeometrySyncManager] UpdateInstances called for mesh {meshId}, {instanceData.InstanceCount} instances");
+                Debug.Log($"[GeometrySyncManager] Current mesh vertex count: {(_reconstructor.Mesh != null ? _reconstructor.Mesh.vertexCount : 0)}");
+                Debug.Log($"[GeometrySyncManager] Has mesh registered: {_instanceRenderer.HasMesh(meshId)}");
+
+                // Check if we already have this base mesh registered
+                if (!_instanceRenderer.HasMesh(meshId))
+                {
+                    // Register the current mesh as the base mesh
+                    // This assumes the base mesh was sent just before the instance data
+                    if (_reconstructor.Mesh != null && _reconstructor.Mesh.vertexCount > 0)
+                    {
+                        Debug.Log($"[GeometrySyncManager] Registering base mesh {meshId} with {_reconstructor.Mesh.vertexCount} vertices");
+                        _instanceRenderer.RegisterBaseMesh(meshId, _reconstructor.Mesh);
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[GeometrySyncManager] Cannot register base mesh {meshId}: no mesh available");
+                        return;
+                    }
+                }
+
+                // Update instance transforms
+                Debug.Log($"[GeometrySyncManager] Calling UpdateInstances for mesh {meshId}");
+                _instanceRenderer.UpdateInstances(meshId, instanceData.Transforms);
+
+                _instanceUpdateCount++;
+
+                if (logMeshUpdates)
+                {
+                    Debug.Log($"Instances updated: {instanceData.InstanceCount} instances for mesh {meshId}");
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Failed to update instances: {e}");
             }
         }
 
@@ -174,10 +259,21 @@ namespace GeometrySync
             GUILayout.Label($"Server: {host}:{port}");
             GUILayout.Space(5);
 
-            GUILayout.Label($"Updates: {_meshUpdateCount}");
+            GUILayout.Label($"Mesh Updates: {_meshUpdateCount}");
+            GUILayout.Label($"Instance Updates: {_instanceUpdateCount}");
             GUILayout.Label($"Vertices: {_lastVertexCount:N0}");
             GUILayout.Label($"Triangles: {_lastTriangleCount:N0}");
-            GUILayout.Label($"Queue: {(_client?.QueuedMeshCount ?? 0)}");
+            GUILayout.Label($"Mesh Queue: {(_client?.QueuedMeshCount ?? 0)}");
+            GUILayout.Label($"Instance Queue: {(_client?.QueuedInstanceCount ?? 0)}");
+
+            if (_instanceRenderer != null)
+            {
+                int totalInstances = _instanceRenderer.GetTotalInstanceCount();
+                if (totalInstances > 0)
+                {
+                    GUILayout.Label($"<color=yellow>Instances: {totalInstances:N0}</color>");
+                }
+            }
 
             if (_averageFps > 0)
             {

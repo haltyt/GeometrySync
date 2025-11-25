@@ -135,6 +135,37 @@ class MeshStreamServer:
                 self.client_socket = None
                 return False
 
+    def send_instance_data(self, instance_data: bytes) -> bool:
+        """
+        Send instance data to connected Unity client
+
+        Args:
+            instance_data: Binary instance data (transforms for GPU instancing)
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        with self.lock:
+            if not self.client_socket:
+                return False
+
+            try:
+                # Message format: [type:1byte][length:4bytes][payload]
+                message_type = 0x02  # Instance data
+                length = len(instance_data)
+                header = struct.pack('<B I', message_type, length)  # < = little-endian
+
+                self.client_socket.sendall(header + instance_data)
+                return True
+            except Exception as e:
+                print(f"Failed to send instances: {e}")
+                try:
+                    self.client_socket.close()
+                except:
+                    pass
+                self.client_socket = None
+                return False
+
     def is_connected(self) -> bool:
         """Check if Unity client is connected"""
         with self.lock:

@@ -16,18 +16,21 @@ namespace GeometrySync
         private Thread _receiveThread;
         private bool _isRunning;
         private readonly ConcurrentQueue<MeshData> _meshQueue;
+        private readonly ConcurrentQueue<InstanceData> _instanceQueue;
         private readonly string _host;
         private readonly int _port;
         private bool _isConnected;
 
         public bool IsConnected => _isConnected;
         public int QueuedMeshCount => _meshQueue.Count;
+        public int QueuedInstanceCount => _instanceQueue.Count;
 
         public MeshStreamClient(string host = "127.0.0.1", int port = 8080)
         {
             _host = host;
             _port = port;
             _meshQueue = new ConcurrentQueue<MeshData>();
+            _instanceQueue = new ConcurrentQueue<InstanceData>();
         }
 
         /// <summary>
@@ -83,11 +86,20 @@ namespace GeometrySync
         }
 
         /// <summary>
+        /// Try to get the next instance data from the queue (Phase 2: GPU Instancing)
+        /// </summary>
+        public bool TryGetInstanceData(out InstanceData instanceData)
+        {
+            return _instanceQueue.TryDequeue(out instanceData);
+        }
+
+        /// <summary>
         /// Clear the mesh queue
         /// </summary>
         public void ClearQueue()
         {
             while (_meshQueue.TryDequeue(out _)) { }
+            while (_instanceQueue.TryDequeue(out _)) { }
         }
 
         private void ReceiveLoop()
@@ -145,12 +157,12 @@ namespace GeometrySync
                                 ProcessMeshData(payload);
                                 break;
 
-                            case 0x02: // Delta update (future)
-                                Debug.LogWarning("Delta updates not yet implemented");
+                            case 0x02: // Instance data (Phase 2: GPU Instancing)
+                                ProcessInstanceData(payload);
                                 break;
 
-                            case 0x03: // Instance data (future)
-                                Debug.LogWarning("Instance data not yet implemented");
+                            case 0x03: // Delta update (future - reserved)
+                                Debug.LogWarning("Delta updates not yet implemented");
                                 break;
 
                             default:
@@ -218,6 +230,29 @@ namespace GeometrySync
             catch (Exception e)
             {
                 Debug.LogError($"Failed to deserialize mesh data: {e}");
+            }
+        }
+
+        private void ProcessInstanceData(byte[] data)
+        {
+            try
+            {
+                Debug.Log($"[MeshStreamClient] Received instance data: {data.Length} bytes");
+                InstanceData instanceData = MeshDeserializer.DeserializeInstanceData(data);
+                Debug.Log($"[MeshStreamClient] Deserialized: {instanceData.InstanceCount} instances for mesh ID {instanceData.MeshId}");
+
+                // Add to queue, but limit queue size
+                _instanceQueue.Enqueue(instanceData);
+
+                // Drop old frames if queue gets too large
+                while (_instanceQueue.Count > 5)
+                {
+                    _instanceQueue.TryDequeue(out _);
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Failed to deserialize instance data: {e}");
             }
         }
 

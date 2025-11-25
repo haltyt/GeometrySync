@@ -138,22 +138,51 @@ def streaming_timer_function():
             continue
 
         try:
-            # Extract mesh data
-            vertices, normals, uvs, indices = extractor.extract_mesh_data_fast(obj, depsgraph)
+            # Phase 2: Check for instances first (Geometry Nodes)
+            instance_result = extractor.extract_instance_transforms(obj, depsgraph)
 
-            if len(vertices) == 0:
-                continue
+            if instance_result is not None:
+                # Object has instances - send base mesh + instance data
+                base_mesh_name, transforms, base_mesh_data = instance_result
+                vertices, normals, uvs, indices = base_mesh_data
 
-            # Serialize to binary
-            mesh_data = serializer.serialize_mesh(vertices, normals, uvs, indices)
+                # Generate mesh ID from base mesh name (hash)
+                mesh_id = hash(base_mesh_name) & 0xFFFFFFFF  # Keep as uint32
 
-            # Send to Unity
-            success = mesh_server.send_mesh(mesh_data)
+                # Serialize and send base mesh
+                mesh_data = serializer.serialize_mesh(vertices, normals, uvs, indices)
+                success = mesh_server.send_mesh(mesh_data)
 
-            if success:
-                print(f"Streamed {obj.name}: {len(vertices)} vertices, {len(indices)//3} triangles")
+                if not success:
+                    print(f"Failed to send base mesh for {obj.name}")
+                    continue
+
+                # Serialize and send instance data
+                instance_data = serializer.serialize_instance_data(mesh_id, transforms)
+                success = mesh_server.send_instance_data(instance_data)
+
+                if success:
+                    print(f"Streamed {obj.name}: {len(transforms)} instances of {base_mesh_name} ({len(vertices)} vertices), mesh_id={mesh_id}")
+                else:
+                    print(f"Failed to send instances for {obj.name}")
+
             else:
-                print(f"Failed to stream {obj.name}")
+                # No instances - send regular mesh
+                vertices, normals, uvs, indices = extractor.extract_mesh_data_fast(obj, depsgraph)
+
+                if len(vertices) == 0:
+                    continue
+
+                # Serialize to binary
+                mesh_data = serializer.serialize_mesh(vertices, normals, uvs, indices)
+
+                # Send to Unity
+                success = mesh_server.send_mesh(mesh_data)
+
+                if success:
+                    print(f"Streamed {obj.name}: {len(vertices)} vertices, {len(indices)//3} triangles")
+                else:
+                    print(f"Failed to stream {obj.name}")
 
         except Exception as e:
             print(f"Error processing {obj.name}: {e}")
