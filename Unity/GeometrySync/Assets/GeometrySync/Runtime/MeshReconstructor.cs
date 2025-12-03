@@ -116,10 +116,17 @@ namespace GeometrySync
         public void UpdateMeshTraditional(MeshData meshData)
         {
             _mesh.Clear();
+
+            // Set index format FIRST before setting any data
+            _mesh.indexFormat = meshData.VertexCount > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
+
             _mesh.vertices = meshData.Vertices;
             _mesh.normals = meshData.Normals;
             _mesh.uv = meshData.UVs;
-            _mesh.triangles = meshData.Indices;
+
+            // Use SetIndices for 32-bit index support
+            _mesh.SetIndices(meshData.Indices, MeshTopology.Triangles, 0);
+
             _mesh.RecalculateBounds();
         }
 

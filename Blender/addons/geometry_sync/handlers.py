@@ -67,18 +67,24 @@ def depsgraph_update_handler(scene: bpy.types.Scene, depsgraph: bpy.types.Depsgr
 
     This runs on every depsgraph change, so we just mark objects as needing
     update and let the timer function handle actual extraction/streaming
+    Only processes visible and selected objects
     """
     scheduler = get_scheduler()
 
     if not scheduler.enabled:
         return
 
+    # Get selected object names for fast lookup
+    selected_names = {obj.name for obj in bpy.context.selected_objects}
+
     # Check which objects were updated
     for update in depsgraph.updates:
         if isinstance(update.id, bpy.types.Object):
             obj = update.id
             if obj.type == 'MESH' and update.is_updated_geometry:
-                scheduler.mark_dirty(obj.name)
+                # Only mark if object is selected and visible
+                if obj.name in selected_names and not obj.hide_viewport and not obj.hide_get():
+                    scheduler.mark_dirty(obj.name)
 
 
 def frame_change_handler(scene: bpy.types.Scene):
@@ -86,15 +92,20 @@ def frame_change_handler(scene: bpy.types.Scene):
     Handler for animation frame changes
 
     Detects timeline frame changes and marks objects with Geometry Nodes as dirty
+    Only processes visible and selected objects
     """
     scheduler = get_scheduler()
 
     if not scheduler.enabled:
         return
 
-    # Mark all mesh objects with Geometry Nodes modifiers as dirty
-    for obj in bpy.data.objects:
+    # Mark selected visible mesh objects with Geometry Nodes modifiers as dirty
+    for obj in bpy.context.selected_objects:
         if obj.type == 'MESH':
+            # Skip hidden objects
+            if obj.hide_viewport or obj.hide_get():
+                continue
+
             # Check if object has Geometry Nodes modifier
             has_geo_nodes = any(mod.type == 'NODES' for mod in obj.modifiers)
             if has_geo_nodes:
@@ -167,8 +178,9 @@ def streaming_timer_function():
                     print(f"Failed to send instances for {obj.name}")
 
             else:
-                # No instances - send regular mesh
+                # No instances - send evaluated mesh (with all modifiers)
                 vertices, normals, uvs, indices = extractor.extract_mesh_data_fast(obj, depsgraph)
+                mesh_type = "mesh"
 
                 if len(vertices) == 0:
                     continue
@@ -180,7 +192,7 @@ def streaming_timer_function():
                 success = mesh_server.send_mesh(mesh_data)
 
                 if success:
-                    print(f"Streamed {obj.name}: {len(vertices)} vertices, {len(indices)//3} triangles")
+                    print(f"Streamed {obj.name} ({mesh_type}): {len(vertices)} vertices, {len(indices)//3} triangles")
                 else:
                     print(f"Failed to stream {obj.name}")
 
