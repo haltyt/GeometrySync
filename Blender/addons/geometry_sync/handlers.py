@@ -20,6 +20,8 @@ class StreamingScheduler:
         self.dirty_objects: Set[str] = set()
         self.lock = threading.Lock()
         self.enabled = False
+        # Cache sent base meshes to avoid resending (mesh_id -> True)
+        self.sent_base_meshes: Set[int] = set()
 
     def mark_dirty(self, obj_name: str):
         """Mark an object as needing update"""
@@ -47,6 +49,21 @@ class StreamingScheduler:
         """Update target FPS"""
         self.target_fps = max(1, min(120, fps))
         self.frame_interval = 1.0 / self.target_fps
+
+    def clear_base_mesh_cache(self):
+        """Clear base mesh cache (call when streaming session starts)"""
+        with self.lock:
+            self.sent_base_meshes.clear()
+
+    def has_sent_base_mesh(self, mesh_id: int) -> bool:
+        """Check if base mesh was already sent"""
+        with self.lock:
+            return mesh_id in self.sent_base_meshes
+
+    def mark_base_mesh_sent(self, mesh_id: int):
+        """Mark base mesh as sent"""
+        with self.lock:
+            self.sent_base_meshes.add(mesh_id)
 
 
 # Global scheduler instance
@@ -126,6 +143,9 @@ def streaming_timer_function():
     if not scheduler.should_update():
         return 0.01  # Check frequently but don't process
 
+    # Performance timing
+    frame_start = time.time()
+
     # Get dirty objects
     dirty_objects = scheduler.get_dirty_objects()
 
@@ -150,36 +170,59 @@ def streaming_timer_function():
 
         try:
             # Phase 2: Check for instances first (Geometry Nodes)
-            instance_result = extractor.extract_instance_transforms(obj, depsgraph)
+            # Get scale parameter from UI
+            base_mesh_scale = context.scene.geometrysync_base_mesh_scale
+
+            extract_start = time.time()
+            instance_result = extractor.extract_instance_transforms(obj, depsgraph, base_mesh_scale)
+            extract_time = (time.time() - extract_start) * 1000  # ms
 
             if instance_result is not None:
                 # Object has instances - send base mesh + instance data
                 base_mesh_name, transforms, base_mesh_data = instance_result
                 vertices, normals, uvs, indices = base_mesh_data
 
-                # Generate mesh ID from base mesh name (hash)
-                mesh_id = hash(base_mesh_name) & 0xFFFFFFFF  # Keep as uint32
+                # Generate mesh ID from base mesh name + scale (so different scales = different meshes)
+                # This ensures Unity updates the mesh when scale changes
+                mesh_id_string = f"{base_mesh_name}_scale_{base_mesh_scale:.3f}"
+                mesh_id = hash(mesh_id_string) & 0xFFFFFFFF  # Keep as uint32
 
-                # Serialize and send base mesh
-                mesh_data = serializer.serialize_mesh(vertices, normals, uvs, indices)
-                success = mesh_server.send_mesh(mesh_data)
+                # Only send base mesh if not already sent (optimization)
+                already_sent = scheduler.has_sent_base_mesh(mesh_id)
+                print(f"[Handler] mesh_id={mesh_id} ({mesh_id_string}), already_sent={already_sent}, vertices={len(vertices)}")
 
-                if not success:
-                    print(f"Failed to send base mesh for {obj.name}")
-                    continue
+                if not already_sent:
+                    # Serialize and send base mesh
+                    mesh_data = serializer.serialize_mesh(vertices, normals, uvs, indices)
+                    success = mesh_server.send_mesh(mesh_data)
 
-                # Serialize and send instance data
+                    if not success:
+                        print(f"Failed to send base mesh for {obj.name}")
+                        continue
+
+                    scheduler.mark_base_mesh_sent(mesh_id)
+                    print(f"Sent base mesh {base_mesh_name} (mesh_id={mesh_id}): {len(vertices)} vertices")
+                else:
+                    print(f"Skipping base mesh send (already sent): {base_mesh_name} (mesh_id={mesh_id})")
+
+                # Always send instance data (transforms change every frame)
+                serialize_start = time.time()
                 instance_data = serializer.serialize_instance_data(mesh_id, transforms)
+                serialize_time = (time.time() - serialize_start) * 1000  # ms
+
+                send_start = time.time()
                 success = mesh_server.send_instance_data(instance_data)
+                send_time = (time.time() - send_start) * 1000  # ms
 
                 if success:
-                    print(f"Streamed {obj.name}: {len(transforms)} instances of {base_mesh_name} ({len(vertices)} vertices), mesh_id={mesh_id}")
+                    total_time = (time.time() - frame_start) * 1000  # ms
+                    print(f"Streamed {obj.name}: {len(transforms)} instances (extract: {extract_time:.1f}ms, serialize: {serialize_time:.1f}ms, send: {send_time:.1f}ms, total: {total_time:.1f}ms)")
                 else:
                     print(f"Failed to send instances for {obj.name}")
 
             else:
                 # No instances - send evaluated mesh (with all modifiers)
-                vertices, normals, uvs, indices = extractor.extract_mesh_data_fast(obj, depsgraph)
+                vertices, normals, uvs, indices = extractor.extract_mesh_data_fast(obj, depsgraph, base_mesh_scale)
                 mesh_type = "mesh"
 
                 if len(vertices) == 0:
@@ -206,6 +249,7 @@ def register_handlers():
     """Register depsgraph handlers and timer"""
     scheduler = get_scheduler()
     scheduler.enabled = True
+    scheduler.clear_base_mesh_cache()  # Clear cache on new session
 
     # Register depsgraph update handler
     if depsgraph_update_handler not in bpy.app.handlers.depsgraph_update_post:
@@ -247,3 +291,20 @@ def set_target_fps(fps: int):
     scheduler = get_scheduler()
     scheduler.set_fps(fps)
     print(f"Streaming FPS set to {scheduler.target_fps}")
+
+
+def on_base_mesh_scale_changed():
+    """Clear base mesh cache when scale changes and mark objects as dirty"""
+    import bpy
+    scheduler = get_scheduler()
+    scheduler.clear_base_mesh_cache()
+
+    # Mark all selected mesh objects as dirty to trigger immediate update
+    dirty_count = 0
+    for obj in bpy.context.selected_objects:
+        if obj.type == 'MESH':
+            scheduler.mark_dirty(obj.name)
+            dirty_count += 1
+
+    new_scale = bpy.context.scene.geometrysync_base_mesh_scale
+    print(f"[GeometrySync] Base mesh scale changed to {new_scale}, cleared cache, marked {dirty_count} objects as dirty")

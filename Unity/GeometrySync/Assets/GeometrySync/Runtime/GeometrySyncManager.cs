@@ -197,21 +197,29 @@ namespace GeometrySync
                 Debug.Log($"[GeometrySyncManager] Current mesh vertex count: {(_reconstructor.Mesh != null ? _reconstructor.Mesh.vertexCount : 0)}");
                 Debug.Log($"[GeometrySyncManager] Has mesh registered: {_instanceRenderer.HasMesh(meshId)}");
 
-                // Check if we already have this base mesh registered
-                if (!_instanceRenderer.HasMesh(meshId))
+                // Always update base mesh if we have new mesh data
+                // This ensures scale changes and other mesh modifications are applied
+                if (_reconstructor.Mesh != null && _reconstructor.Mesh.vertexCount > 0)
                 {
-                    // Register the current mesh as the base mesh
-                    // This assumes the base mesh was sent just before the instance data
-                    if (_reconstructor.Mesh != null && _reconstructor.Mesh.vertexCount > 0)
-                    {
-                        Debug.Log($"[GeometrySyncManager] Registering base mesh {meshId} with {_reconstructor.Mesh.vertexCount} vertices");
-                        _instanceRenderer.RegisterBaseMesh(meshId, _reconstructor.Mesh);
-                    }
-                    else
-                    {
-                        Debug.LogWarning($"[GeometrySyncManager] Cannot register base mesh {meshId}: no mesh available");
-                        return;
-                    }
+                    bool isNew = !_instanceRenderer.HasMesh(meshId);
+                    string action = isNew ? "Registering" : "Updating";
+
+                    // Create a copy of the mesh to avoid reference issues
+                    Mesh meshCopy = new Mesh();
+                    meshCopy.name = $"InstanceBaseMesh_{meshId}";
+                    meshCopy.vertices = _reconstructor.Mesh.vertices;
+                    meshCopy.normals = _reconstructor.Mesh.normals;
+                    meshCopy.uv = _reconstructor.Mesh.uv;
+                    meshCopy.triangles = _reconstructor.Mesh.triangles;
+                    meshCopy.RecalculateBounds();
+
+                    Debug.Log($"[GeometrySyncManager] {action} base mesh {meshId} with {meshCopy.vertexCount} vertices");
+                    _instanceRenderer.RegisterBaseMesh(meshId, meshCopy);
+                }
+                else
+                {
+                    Debug.LogWarning($"[GeometrySyncManager] Cannot register base mesh {meshId}: no mesh available");
+                    return;
                 }
 
                 // Update instance transforms

@@ -496,12 +496,14 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   instanceMaterial: {fileID: 2100000, guid: 06fd665401828f14a8a71bba107ba38f, type: 2}
-  useIndirectRendering: 0
-  useCustomIndirectShader: 0
+  useIndirectRendering: 1
+  useCustomIndirectShader: 1
   shadowCasting: 1
   receiveShadows: 1
   renderLayer: 0
-  logUpdates: 0
+  instanceScale: 1
+  instanceOffset: {x: 0, y: 0, z: 0}
+  logUpdates: 1
   showDebugInfo: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

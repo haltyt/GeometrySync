@@ -71,14 +71,79 @@ def extract_mesh_data(obj: bpy.types.Object,
     return unique_vertices, unique_normals, unique_uvs, indices
 
 
+def extract_base_mesh_data(obj: bpy.types.Object) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extract base mesh data WITHOUT Geometry Nodes evaluation
+
+    Args:
+        obj: Blender object
+
+    Returns:
+        Tuple of (vertices, normals, uvs, indices)
+    """
+    mesh = obj.data
+
+    # Ensure mesh has triangulated data
+    if hasattr(mesh, 'calc_normals_split'):
+        mesh.calc_normals_split()
+    mesh.calc_loop_triangles()
+
+    # Get triangle loops
+    tri_count = len(mesh.loop_triangles)
+    if tri_count == 0:
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 2), dtype=np.float32),
+                np.zeros(0, dtype=np.uint32))
+
+    # Extract loop indices for triangles
+    tri_loops = np.zeros(tri_count * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get('loops', tri_loops)
+
+    # Get vertex indices from loops
+    vertex_indices = np.zeros(len(mesh.loops), dtype=np.int32)
+    mesh.loops.foreach_get('vertex_index', vertex_indices)
+    tri_vertex_indices = vertex_indices[tri_loops]
+
+    # Extract all vertex positions
+    all_positions = np.zeros(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get('co', all_positions)
+    all_positions = all_positions.reshape((-1, 3))
+
+    # Expand positions to per-loop
+    positions = all_positions[tri_vertex_indices]
+
+    # Extract normals (per-loop)
+    all_normals = np.zeros(len(mesh.loops) * 3, dtype=np.float32)
+    mesh.loops.foreach_get('normal', all_normals)
+    all_normals = all_normals.reshape((-1, 3))
+    normals = all_normals[tri_loops]
+
+    # Extract UVs (per-loop)
+    if mesh.uv_layers.active:
+        all_uvs = np.zeros(len(mesh.loops) * 2, dtype=np.float32)
+        mesh.uv_layers.active.data.foreach_get('uv', all_uvs)
+        all_uvs = all_uvs.reshape((-1, 2))
+        uvs = all_uvs[tri_loops]
+    else:
+        uvs = np.zeros((len(positions), 2), dtype=np.float32)
+
+    # Sequential indices
+    indices = np.arange(len(positions), dtype=np.uint32)
+
+    return positions, normals, uvs, indices
+
+
 def extract_mesh_data_fast(obj: bpy.types.Object,
-                           depsgraph: bpy.types.Depsgraph) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                           depsgraph: bpy.types.Depsgraph,
+                           scale_multiplier: float = 1.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Fast mesh extraction optimized for real-time streaming
 
     Args:
         obj: Blender object
         depsgraph: Evaluated depsgraph
+        scale_multiplier: Global scale multiplier for mesh vertices
 
     Returns:
         Tuple of (vertices, normals, uvs, indices)
@@ -102,11 +167,19 @@ def extract_mesh_data_fast(obj: bpy.types.Object,
                 np.zeros((0, 2), dtype=np.float32),
                 np.zeros(0, dtype=np.uint32))
 
-    # Extract loop indices for triangles
+    # Extract loop indices for triangles (3 indices per triangle)
     tri_loops = np.zeros(tri_count * 3, dtype=np.int32)
     mesh_eval.loop_triangles.foreach_get('loops', tri_loops)
 
-    # Get vertex indices from loops
+    # Validate loop indices
+    if len(tri_loops) > 0 and tri_loops.max() >= len(mesh_eval.loops):
+        print(f"[ERROR] Loop index out of bounds: max={tri_loops.max()}, loops={len(mesh_eval.loops)}")
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 2), dtype=np.float32),
+                np.zeros(0, dtype=np.uint32))
+
+    # Get vertex indices for each loop
     vertex_indices = np.zeros(len(mesh_eval.loops), dtype=np.int32)
     mesh_eval.loops.foreach_get('vertex_index', vertex_indices)
     tri_vertex_indices = vertex_indices[tri_loops]
@@ -116,7 +189,7 @@ def extract_mesh_data_fast(obj: bpy.types.Object,
     mesh_eval.vertices.foreach_get('co', all_positions)
     all_positions = all_positions.reshape((-1, 3))
 
-    # Expand positions to per-loop
+    # Expand positions to per-triangle-vertex
     positions = all_positions[tri_vertex_indices]
 
     # Extract normals (per-loop)
@@ -132,10 +205,14 @@ def extract_mesh_data_fast(obj: bpy.types.Object,
         all_uvs = all_uvs.reshape((-1, 2))
         uvs = all_uvs[tri_loops]
     else:
-        uvs = np.zeros((len(positions), 2), dtype=np.float32)
+        uvs = np.zeros((tri_count * 3, 2), dtype=np.float32)
 
-    # Sequential indices
-    indices = np.arange(len(positions), dtype=np.uint32)
+    # Sequential indices (0, 1, 2, 3, 4, 5, ...)
+    indices = np.arange(tri_count * 3, dtype=np.uint32)
+
+    # Apply scale multiplier to vertices
+    if scale_multiplier != 1.0:
+        positions *= scale_multiplier
 
     return positions, normals, uvs, indices
 
@@ -205,13 +282,15 @@ def extract_custom_attributes(obj: bpy.types.Object,
 
 
 def extract_instance_transforms(obj: bpy.types.Object,
-                                depsgraph: bpy.types.Depsgraph) -> Optional[Tuple[str, np.ndarray, Tuple]]:
+                                depsgraph: bpy.types.Depsgraph,
+                                base_mesh_scale_multiplier: float = 1.0) -> Optional[Tuple[str, np.ndarray, Tuple]]:
     """
     Extract instance transforms from Geometry Nodes instances
 
     Args:
         obj: Blender object with Geometry Nodes
         depsgraph: Evaluated depsgraph
+        base_mesh_scale_multiplier: Global scale multiplier for base mesh vertices
 
     Returns:
         Tuple of (base_mesh_name, transform_matrices, base_mesh_data) or None if no instances
@@ -222,46 +301,74 @@ def extract_instance_transforms(obj: bpy.types.Object,
     # Check if object has Geometry Nodes modifier
     has_geo_nodes = any(mod.type == 'NODES' for mod in obj.modifiers)
     if not has_geo_nodes:
-        print(f"[extract_instance_transforms] {obj.name} has no Geometry Nodes modifier")
         return None
 
-    instances = []
+    # Get evaluated object
+    obj_eval = obj.evaluated_get(depsgraph)
+
+    # Collect instances using depsgraph.object_instances
+    # This includes the full transform including instance offset
     base_object = None
+    instance_data = []
 
-    print(f"[extract_instance_transforms] Checking {obj.name} for instances...")
-
-    # Iterate through depsgraph instances
-    # The depsgraph contains all evaluated object instances
-    instance_count = 0
     for instance in depsgraph.object_instances:
-        instance_count += 1
         # Check if this instance belongs to our object
-        # instance.parent is the object that generated the instance
         if instance.parent and instance.parent.original == obj:
-            print(f"  Found instance from {obj.name}: is_instance={instance.is_instance}")
             if instance.is_instance:
-                # Get the 4x4 transform matrix (world space)
-                # Convert Blender's Matrix to NumPy array
-                matrix = np.array(instance.matrix_world, dtype=np.float32).reshape(4, 4)
-                instances.append(matrix)
+                # Get the instance object and its world matrix
+                inst_obj = instance.object
+                if inst_obj:
+                    # Store instance data: (matrix, object)
+                    instance_data.append((instance.matrix_world.copy(), inst_obj))
+                    if base_object is None:
+                        base_object = inst_obj.original
 
-                # Get base object reference (the instanced mesh)
-                if base_object is None and instance.object:
-                    base_object = instance.object.original
-                    print(f"  Base object: {base_object.name if base_object else 'None'}")
-
-    print(f"[extract_instance_transforms] Total depsgraph instances: {instance_count}, Found {len(instances)} instances for {obj.name}")
-
-    if not instances or base_object is None:
-        print(f"[extract_instance_transforms] No instances found or no base object")
+    if not instance_data or base_object is None:
         return None
 
-    # Stack matrices into (N, 4, 4) array
-    transforms = np.stack(instances, axis=0)
+    instance_count = len(instance_data)
 
-    # Extract base mesh data
+    # Get parent object's world matrix to compute relative transforms
+    parent_matrix = obj_eval.matrix_world.copy()
+    parent_matrix_inv = parent_matrix.inverted()
+
+    # Convert to numpy array
+    transforms = np.empty((instance_count, 4, 4), dtype=np.float32)
+
+    for idx, (matrix, inst_obj) in enumerate(instance_data):
+        # Convert matrix to local space relative to parent
+        # This gives us the actual instance position
+        local_matrix = parent_matrix_inv @ matrix
+
+        # Decompose matrix into translation, rotation, and scale
+        from mathutils import Matrix
+        translation = local_matrix.translation
+        rotation = local_matrix.to_quaternion()
+        scale = local_matrix.to_scale()
+
+        # Keep transform scale unchanged (don't modify instance scale)
+        # Base mesh scale is applied to vertices instead
+        local_matrix = Matrix.LocRotScale(translation, rotation, scale)
+
+        for i in range(4):
+            for j in range(4):
+                transforms[idx, i, j] = local_matrix[i][j]
+
+    # DEBUG: Log first transform's scale component
+    if instance_count > 0:
+        # Extract scale from first transform matrix
+        import math
+        m = transforms[0]
+        scale_x = math.sqrt(m[0, 0]**2 + m[1, 0]**2 + m[2, 0]**2)
+        scale_y = math.sqrt(m[0, 1]**2 + m[1, 1]**2 + m[2, 1]**2)
+        scale_z = math.sqrt(m[0, 2]**2 + m[1, 2]**2 + m[2, 2]**2)
+        print(f"[Extractor] Transform[0] scale (unchanged): ({scale_x:.3f}, {scale_y:.3f}, {scale_z:.3f})")
+
+    # Extract base mesh data WITH scale applied to vertices
     try:
-        base_mesh_data = extract_mesh_data_fast(base_object, depsgraph)
+        base_mesh_data = extract_mesh_data_fast(base_object, depsgraph, scale_multiplier=base_mesh_scale_multiplier)
+        vertices, normals, uvs, indices = base_mesh_data
+        print(f"[Extractor] Base mesh vertices scaled by: {base_mesh_scale_multiplier}, Vertex count: {len(vertices)}")
     except Exception as e:
         print(f"Failed to extract base mesh for instances: {e}")
         return None

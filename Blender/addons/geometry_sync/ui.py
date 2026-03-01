@@ -41,6 +41,7 @@ class GEOMETRYSYNC_PT_MainPanel(bpy.types.Panel):
 
         scheduler = handlers.get_scheduler()
         box.prop(scene, "geometrysync_fps", text="Target FPS")
+        box.prop(scene, "geometrysync_base_mesh_scale", text="Base Mesh Scale")
 
         if scheduler.enabled:
             box.label(text=f"Active: {scheduler.target_fps} FPS", icon='TIME')
@@ -116,10 +117,22 @@ def register_properties():
         update=lambda self, context: handlers.set_target_fps(self.geometrysync_fps)
     )
 
+    bpy.types.Scene.geometrysync_base_mesh_scale = bpy.props.FloatProperty(
+        name="Base Mesh Scale",
+        description="Global scale multiplier for base mesh geometry",
+        default=1.0,
+        min=0.001,
+        max=100.0,
+        soft_min=0.01,
+        soft_max=10.0,
+        update=lambda self, context: handlers.on_base_mesh_scale_changed()
+    )
+
 
 def unregister_properties():
     """Unregister scene properties"""
     del bpy.types.Scene.geometrysync_fps
+    del bpy.types.Scene.geometrysync_base_mesh_scale
 
 
 classes = (

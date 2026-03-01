@@ -30,6 +30,10 @@ namespace GeometrySync
         [Tooltip("Layer for instanced rendering")]
         public int renderLayer = 0;
 
+        [Header("Transform")]
+        [Tooltip("Global position offset for all instances")]
+        public Vector3 instanceOffset = Vector3.zero;
+
         [Header("Debug")]
         [Tooltip("Log instance updates")]
         public bool logUpdates = false;
@@ -47,6 +51,7 @@ namespace GeometrySync
         // Phase 3A: GPU buffers for indirect rendering
         private Dictionary<uint, ComputeBuffer> _transformBuffers = new Dictionary<uint, ComputeBuffer>();
         private Dictionary<uint, ComputeBuffer> _argsBuffers = new Dictionary<uint, ComputeBuffer>();
+        private Dictionary<uint, MaterialPropertyBlock> _propertyBlocks = new Dictionary<uint, MaterialPropertyBlock>();
 
         // Bounds for culling (large default to include all instances)
         private Bounds _renderBounds = new Bounds(Vector3.zero, Vector3.one * 10000f);
@@ -84,7 +89,14 @@ namespace GeometrySync
             {
                 if (logUpdates)
                 {
-                    Debug.LogWarning($"[GPUInstanceRenderer] Replacing existing mesh with ID {meshId}");
+                    Debug.Log($"[GPUInstanceRenderer] Replacing existing mesh with ID {meshId}");
+                }
+
+                // Destroy old mesh to prevent memory leak
+                Mesh oldMesh = _baseMeshes[meshId];
+                if (oldMesh != null && oldMesh != mesh)
+                {
+                    Destroy(oldMesh);
                 }
             }
 
@@ -93,6 +105,13 @@ namespace GeometrySync
             if (logUpdates)
             {
                 Debug.Log($"[GPUInstanceRenderer] Registered base mesh {meshId}: {mesh.vertexCount} vertices");
+
+                // DEBUG: Log first vertex position to verify mesh data changed
+                if (mesh.vertexCount > 0)
+                {
+                    Vector3 firstVertex = mesh.vertices[0];
+                    Debug.Log($"[GPUInstanceRenderer] First vertex: {firstVertex}, Bounds: {mesh.bounds.size}");
+                }
             }
         }
 
@@ -116,12 +135,35 @@ namespace GeometrySync
                 return;
             }
 
-            _instanceTransforms[meshId] = transforms;
+            // Apply global scale and offset to each transform
+            Matrix4x4[] adjustedTransforms = new Matrix4x4[transforms.Length];
+
+            for (int i = 0; i < transforms.Length; i++)
+            {
+                // Decompose the original transform into TRS (Translation, Rotation, Scale)
+                Vector3 position = transforms[i].GetPosition();
+                Quaternion rotation = transforms[i].rotation;
+                Vector3 scale = transforms[i].lossyScale;
+
+                // DEBUG: Log first transform's scale (no longer modified by instanceScale)
+                if (i == 0 && logUpdates)
+                {
+                    Debug.Log($"[GPUInstanceRenderer] Transform scale (unchanged): {scale}");
+                }
+
+                // Apply global offset to the position
+                position += instanceOffset;
+
+                // Reconstruct the matrix with unchanged scale and adjusted position
+                adjustedTransforms[i] = Matrix4x4.TRS(position, rotation, scale);
+            }
+
+            _instanceTransforms[meshId] = adjustedTransforms;
 
             // Phase 3A: Update ComputeBuffers for indirect rendering
             if (useIndirectRendering && _supportsIndirectRendering)
             {
-                UpdateIndirectBuffers(meshId, transforms);
+                UpdateIndirectBuffers(meshId, adjustedTransforms);
             }
 
             if (logUpdates)
@@ -153,11 +195,14 @@ namespace GeometrySync
             // Upload transform data to GPU
             _transformBuffers[meshId].SetData(transforms);
 
-            // Set buffer to material
-            if (instanceMaterial != null)
+            // Create or get MaterialPropertyBlock for this mesh
+            if (!_propertyBlocks.ContainsKey(meshId))
             {
-                instanceMaterial.SetBuffer("_TransformBuffer", _transformBuffers[meshId]);
+                _propertyBlocks[meshId] = new MaterialPropertyBlock();
             }
+
+            // Set buffer to property block (per-mesh, not global)
+            _propertyBlocks[meshId].SetBuffer("_TransformBuffer", _transformBuffers[meshId]);
 
             // Update args buffer for DrawMeshInstancedIndirect
             UpdateArgsBuffer(meshId, transforms.Length);
@@ -230,10 +275,33 @@ namespace GeometrySync
                 uint meshId = kvp.Key;
 
                 if (!_baseMeshes.TryGetValue(meshId, out Mesh mesh))
+                {
+                    Debug.LogWarning($"[GPUInstanceRenderer] RenderIndirect: No base mesh for ID {meshId}");
                     continue;
+                }
 
                 if (!_argsBuffers.ContainsKey(meshId) || _argsBuffers[meshId] == null)
+                {
+                    Debug.LogWarning($"[GPUInstanceRenderer] RenderIndirect: No args buffer for ID {meshId}");
                     continue;
+                }
+
+                if (!_propertyBlocks.ContainsKey(meshId))
+                {
+                    Debug.LogWarning($"[GPUInstanceRenderer] RenderIndirect: No property block for ID {meshId}");
+                    continue;
+                }
+
+                if (!_transformBuffers.ContainsKey(meshId) || _transformBuffers[meshId] == null)
+                {
+                    Debug.LogWarning($"[GPUInstanceRenderer] RenderIndirect: No transform buffer for ID {meshId}");
+                    continue;
+                }
+
+                if (logUpdates)
+                {
+                    Debug.Log($"[GPUInstanceRenderer] Drawing {kvp.Value.Length} instances of mesh {meshId}, buffer count: {_transformBuffers[meshId].count}");
+                }
 
                 // Single draw call for ALL instances (no 1023 limit!)
                 Graphics.DrawMeshInstancedIndirect(
@@ -243,7 +311,7 @@ namespace GeometrySync
                     _renderBounds,
                     _argsBuffers[meshId],
                     0, // args offset
-                    null, // material property block
+                    _propertyBlocks[meshId], // Use property block with _TransformBuffer
                     shadowCasting,
                     receiveShadows,
                     renderLayer,
@@ -274,10 +342,28 @@ namespace GeometrySync
                     continue;
                 }
 
+                // DEBUG: Log transform array details
+                if (logUpdates)
+                {
+                    Debug.Log($"[GPUInstanceRenderer] RenderBatched: meshId={meshId}, total transforms={transforms.Length}");
+
+                    // Log first 3 transform positions to verify they're different
+                    for (int i = 0; i < Mathf.Min(3, transforms.Length); i++)
+                    {
+                        Vector3 pos = transforms[i].GetPosition();
+                        Debug.Log($"  Transform[{i}] position: {pos}");
+                    }
+                }
+
                 // Graphics.DrawMeshInstanced supports max 1023 instances per call
                 // Split into batches if needed
                 int maxInstancesPerBatch = 1023;
                 int batches = Mathf.CeilToInt((float)transforms.Length / maxInstancesPerBatch);
+
+                if (logUpdates)
+                {
+                    Debug.Log($"[GPUInstanceRenderer] Drawing {batches} batches for {transforms.Length} instances");
+                }
 
                 for (int batch = 0; batch < batches; batch++)
                 {
@@ -288,6 +374,11 @@ namespace GeometrySync
                     // Create batch transform array
                     Matrix4x4[] batchTransforms = new Matrix4x4[count];
                     System.Array.Copy(transforms, startIdx, batchTransforms, 0, count);
+
+                    if (logUpdates)
+                    {
+                        Debug.Log($"[GPUInstanceRenderer] Batch {batch}: startIdx={startIdx}, count={count}");
+                    }
 
                     // Draw instanced mesh
                     Graphics.DrawMeshInstanced(
@@ -359,6 +450,11 @@ namespace GeometrySync
                 _argsBuffers[meshId].Release();
                 _argsBuffers.Remove(meshId);
             }
+
+            if (_propertyBlocks.ContainsKey(meshId))
+            {
+                _propertyBlocks.Remove(meshId);
+            }
         }
 
         /// <summary>
@@ -377,6 +473,8 @@ namespace GeometrySync
                 buffer?.Release();
             }
             _argsBuffers.Clear();
+
+            _propertyBlocks.Clear();
         }
 
         /// <summary>
