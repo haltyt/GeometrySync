@@ -12,7 +12,7 @@ from typing import Optional, Callable
 class MeshStreamServer:
     """TCP server that streams mesh data to Unity clients"""
 
-    def __init__(self, host: str = '127.0.0.1', port: int = 8080):
+    def __init__(self, host: str = '0.0.0.0', port: int = 8080):
         self.host = host
         self.port = port
         self.server_socket: Optional[socket.socket] = None

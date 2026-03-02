@@ -9,6 +9,7 @@ ehthumbs.db
 # IDE and editors
 .vscode/
 .idea/
+xcuserdata/
 *.swp
 *.swo
 *~
