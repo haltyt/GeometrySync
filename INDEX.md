@@ -146,6 +146,7 @@ Quick lookups and API documentation:
 - [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Complete architecture
 - [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical summary
 - [README.md](README.md) - High-level overview
+- [VISIONPRO_SYNC_STUDY.md](VISIONPRO_SYNC_STUDY.md) - Blender → Vision Pro 同期方式の検討 (vs USDZ streaming)
 
 ### Usage & API
 
