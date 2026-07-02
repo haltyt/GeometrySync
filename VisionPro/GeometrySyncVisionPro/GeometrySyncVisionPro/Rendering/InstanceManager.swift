@@ -50,6 +50,16 @@ final class InstanceManager {
         baseMeshes[meshId] != nil
     }
 
+    /// Replace the shared material on all pooled entities (0x04 sync).
+    func setMaterial(_ newMaterial: RealityKit.Material) {
+        sharedMaterial = newMaterial
+        for (_, pool) in entityPools {
+            for entity in pool {
+                entity.model?.materials = [newMaterial]
+            }
+        }
+    }
+
     // MARK: - Instance updates
 
     func updateInstances(_ data: InstanceData) {

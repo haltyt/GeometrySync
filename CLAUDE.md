@@ -39,7 +39,7 @@ No traditional build system. Both sides are interpreted/managed.
 ## Key Architecture
 
 **Binary protocol**: `[Type:1B][Length:4B][Payload:NB]`
-- 0x01 = full mesh, 0x02 = instance data, 0x03 = instance transforms
+- 0x01 = full mesh, 0x02 = instance data, 0x03 = instance transforms, 0x04 = material parameters (PBR, 64B)
 - Vertex stride: 32 bytes (pos:12 + normal:12 + uv:8)
 - 32-bit indices for meshes >65k vertices
 

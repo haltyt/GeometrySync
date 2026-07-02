@@ -38,6 +38,12 @@ struct ImmersiveView: View {
                 await applyMesh(rawMesh)
             }
         }
+        .task(id: appModel.client?.host) {
+            guard let client = appModel.client else { return }
+            for await materialData in client.materialStream {
+                applyMaterial(materialData)
+            }
+        }
         .task(id: appModel.client?.port) {
             guard let client = appModel.client else { return }
             for await instanceData in client.instanceStream {
@@ -100,6 +106,26 @@ struct ImmersiveView: View {
             meshEntity = entity
             logger.info("Created mesh entity")
         }
+    }
+
+    // MARK: - Material application
+
+    @MainActor
+    private func applyMaterial(_ data: MaterialData) {
+        resolveRenderers()
+
+        let material = data.makeMaterial()
+
+        // Existing entities
+        meshEntity?.model?.materials = [material]
+
+        // Future entities created by either pipeline
+        metalMeshBuilder?.setMaterial(material)
+        meshBuilder.setMaterial(material)
+        metalInstanceRenderer?.setMaterial(material)
+        instanceManager.setMaterial(material)
+
+        logger.info("Applied material \(data.materialId)")
     }
 
     // MARK: - Instance application

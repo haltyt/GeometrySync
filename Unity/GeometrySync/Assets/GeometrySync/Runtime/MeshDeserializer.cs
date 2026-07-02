@@ -29,6 +29,20 @@ namespace GeometrySync
     }
 
     /// <summary>
+    /// PBR material parameters from Blender's Principled BSDF (message 0x04)
+    /// </summary>
+    public struct MaterialData
+    {
+        public uint MaterialId;          // Hash of Blender material name
+        public Color BaseColor;          // Linear RGBA
+        public float Metallic;
+        public float Roughness;          // Blender convention (Unity Smoothness = 1 - Roughness)
+        public Color Emission;           // Linear RGB (alpha unused)
+        public float EmissionStrength;
+        public float Alpha;
+    }
+
+    /// <summary>
     /// Deserializes binary mesh data from Blender
     /// </summary>
     public static class MeshDeserializer
@@ -204,6 +218,60 @@ namespace GeometrySync
             {
                 MeshId = meshId,
                 Transforms = transforms
+            };
+        }
+
+        /// <summary>
+        /// Deserialize PBR material parameters (message 0x04, M1: params only)
+        ///
+        /// Binary format (64 bytes, little-endian, colors linear):
+        /// - material_id (uint32)
+        /// - base_color (float32 x 4, RGBA)
+        /// - metallic (float32), roughness (float32)
+        /// - emission (float32 x 3), emission_strength (float32)
+        /// - alpha (float32)
+        /// - texture_flags (uint32) + texture_ids (uint32 x 3) — reserved, ignored
+        /// </summary>
+        public static MaterialData DeserializeMaterialData(byte[] data)
+        {
+            const int expectedSize = 64;
+            if (data == null || data.Length < expectedSize)
+            {
+                throw new ArgumentException(
+                    $"Invalid material data size: expected {expectedSize}, got {data?.Length ?? 0}");
+            }
+
+            int offset = 0;
+
+            uint materialId = BitConverter.ToUInt32(data, offset);
+            offset += 4;
+
+            float r = BitConverter.ToSingle(data, offset); offset += 4;
+            float g = BitConverter.ToSingle(data, offset); offset += 4;
+            float b = BitConverter.ToSingle(data, offset); offset += 4;
+            float a = BitConverter.ToSingle(data, offset); offset += 4;
+
+            float metallic = BitConverter.ToSingle(data, offset); offset += 4;
+            float roughness = BitConverter.ToSingle(data, offset); offset += 4;
+
+            float er = BitConverter.ToSingle(data, offset); offset += 4;
+            float eg = BitConverter.ToSingle(data, offset); offset += 4;
+            float eb = BitConverter.ToSingle(data, offset); offset += 4;
+            float emissionStrength = BitConverter.ToSingle(data, offset); offset += 4;
+
+            float alpha = BitConverter.ToSingle(data, offset); offset += 4;
+
+            // texture_flags + texture_ids are reserved for Phase M2
+
+            return new MaterialData
+            {
+                MaterialId = materialId,
+                BaseColor = new Color(r, g, b, a),
+                Metallic = metallic,
+                Roughness = roughness,
+                Emission = new Color(er, eg, eb, 1f),
+                EmissionStrength = emissionStrength,
+                Alpha = alpha
             };
         }
     }

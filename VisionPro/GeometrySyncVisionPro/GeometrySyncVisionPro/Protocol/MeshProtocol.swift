@@ -38,9 +38,23 @@ struct InstanceData {
     var instanceCount: Int { transforms.count }
 }
 
+/// PBR material parameters from Blender's Principled BSDF (message 0x04).
+/// Colors are linear (Blender convention); roughness is Blender/RealityKit
+/// convention (no smoothness inversion needed).
+struct MaterialData: Sendable {
+    var materialId: UInt32          // Hash of Blender material name
+    var baseColor: SIMD4<Float>     // Linear RGBA
+    var metallic: Float
+    var roughness: Float
+    var emission: SIMD3<Float>      // Linear RGB
+    var emissionStrength: Float
+    var alpha: Float
+}
+
 /// Binary protocol message types
 enum MessageType: UInt8 {
     case mesh = 0x01
     case instance = 0x02
-    case delta = 0x03  // Reserved, not implemented
+    case delta = 0x03     // Reserved, not implemented
+    case material = 0x04  // PBR material parameters (M1)
 }

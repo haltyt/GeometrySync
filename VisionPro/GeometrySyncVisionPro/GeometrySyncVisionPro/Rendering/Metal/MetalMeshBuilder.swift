@@ -165,6 +165,11 @@ final class MetalMeshBuilder {
 
     func getMaterial() -> RealityKit.Material { material }
 
+    /// Replace the shared material (streamed from Blender via 0x04).
+    func setMaterial(_ newMaterial: RealityKit.Material) {
+        material = newMaterial
+    }
+
     /// Build or update the LowLevelMesh from a raw wire payload.
     /// Returns the MeshResource to assign to the entity (a new instance
     /// after a capacity grow, the same instance otherwise).

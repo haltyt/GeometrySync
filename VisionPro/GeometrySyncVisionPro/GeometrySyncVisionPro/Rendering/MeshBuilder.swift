@@ -63,6 +63,11 @@ final class MeshBuilder {
         return mat
     }
 
+    /// Replace the shared material (streamed from Blender via 0x04).
+    func setMaterial(_ newMaterial: RealityKit.Material) {
+        material = newMaterial
+    }
+
     /// Reset builder state.
     func reset() {
         currentResource = nil

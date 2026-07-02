@@ -197,6 +197,59 @@ enum MeshDeserializer {
         }
     }
 
+    // MARK: - Material deserialization
+
+    /// Deserialize PBR material parameters (message 0x04, 64 bytes).
+    ///
+    /// Binary format (little-endian, colors linear):
+    /// - materialId (uint32)
+    /// - baseColor (float32 × 4, RGBA)
+    /// - metallic (float32), roughness (float32)
+    /// - emission (float32 × 3), emissionStrength (float32)
+    /// - alpha (float32)
+    /// - textureFlags (uint32) + textureIds (uint32 × 3) — reserved, ignored
+    static func deserializeMaterial(_ data: Data) throws -> MaterialData {
+        let expectedSize = 64
+        guard data.count >= expectedSize else {
+            throw DeserializerError.invalidDataSize(expected: expectedSize, got: data.count)
+        }
+
+        return data.withUnsafeBytes { raw in
+            let ptr = raw.baseAddress!
+            var offset = 0
+
+            let materialId = readUInt32(ptr, offset: &offset)
+
+            let baseColor = SIMD4<Float>(
+                readFloat(ptr, offset: &offset),
+                readFloat(ptr, offset: &offset),
+                readFloat(ptr, offset: &offset),
+                readFloat(ptr, offset: &offset))
+
+            let metallic = readFloat(ptr, offset: &offset)
+            let roughness = readFloat(ptr, offset: &offset)
+
+            let emission = SIMD3<Float>(
+                readFloat(ptr, offset: &offset),
+                readFloat(ptr, offset: &offset),
+                readFloat(ptr, offset: &offset))
+            let emissionStrength = readFloat(ptr, offset: &offset)
+
+            let alpha = readFloat(ptr, offset: &offset)
+
+            // textureFlags + textureIds are reserved for Phase M2
+
+            return MaterialData(
+                materialId: materialId,
+                baseColor: baseColor,
+                metallic: metallic,
+                roughness: roughness,
+                emission: emission,
+                emissionStrength: emissionStrength,
+                alpha: alpha)
+        }
+    }
+
     // MARK: - Binary readers (little-endian)
 
     @inline(__always)

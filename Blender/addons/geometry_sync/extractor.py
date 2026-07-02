@@ -281,6 +281,88 @@ def extract_custom_attributes(obj: bpy.types.Object,
     return attributes
 
 
+def extract_material_params(obj: bpy.types.Object,
+                            depsgraph: bpy.types.Depsgraph) -> Optional[Dict[str, Any]]:
+    """
+    Extract Principled BSDF parameters from the object's first material.
+
+    Uses the evaluated object so materials assigned via Geometry Nodes
+    (Set Material) are included. Linked sockets are ignored for M1
+    (default_value is meaningless when a node is connected) — texture
+    transfer is a later phase (see MATERIAL_SYNC_STUDY.md).
+
+    Args:
+        obj: Blender object
+        depsgraph: Evaluated depsgraph
+
+    Returns:
+        Dict with name/base_color/metallic/roughness/emission/
+        emission_strength/alpha, or None if the object has no material
+    """
+    obj_eval = obj.evaluated_get(depsgraph)
+    mesh_eval = obj_eval.data
+
+    mat = None
+    if mesh_eval and getattr(mesh_eval, 'materials', None):
+        for m in mesh_eval.materials:
+            if m is not None:
+                mat = m
+                break
+    if mat is None:
+        for slot in obj.material_slots:
+            if slot.material is not None:
+                mat = slot.material
+                break
+    if mat is None:
+        return None
+
+    params = {
+        'name': mat.name,
+        'base_color': (0.8, 0.8, 0.8, 1.0),
+        'metallic': 0.0,
+        'roughness': 0.5,
+        'emission': (0.0, 0.0, 0.0),
+        'emission_strength': 0.0,
+        'alpha': 1.0,
+    }
+
+    bsdf = None
+    if mat.use_nodes and mat.node_tree:
+        bsdf = next((n for n in mat.node_tree.nodes
+                     if n.type == 'BSDF_PRINCIPLED'), None)
+
+    if bsdf is not None:
+        inputs = bsdf.inputs
+
+        def socket_value(name, default):
+            sock = inputs.get(name)
+            if sock is None or sock.is_linked:
+                return default
+            value = sock.default_value
+            try:
+                return tuple(value)
+            except TypeError:
+                return float(value)
+
+        params['base_color'] = socket_value('Base Color', params['base_color'])
+        params['metallic'] = socket_value('Metallic', params['metallic'])
+        params['roughness'] = socket_value('Roughness', params['roughness'])
+        # Blender 4.x renamed 'Emission' to 'Emission Color'
+        emission_sock = inputs.get('Emission Color') or inputs.get('Emission')
+        if emission_sock is not None and not emission_sock.is_linked:
+            params['emission'] = tuple(emission_sock.default_value)[:3]
+        params['emission_strength'] = socket_value(
+            'Emission Strength', params['emission_strength'])
+        params['alpha'] = socket_value('Alpha', params['alpha'])
+    else:
+        # use_nodes off or no Principled BSDF — fall back to viewport values
+        params['base_color'] = tuple(mat.diffuse_color)
+        params['metallic'] = mat.metallic
+        params['roughness'] = mat.roughness
+
+    return params
+
+
 def extract_instance_transforms(obj: bpy.types.Object,
                                 depsgraph: bpy.types.Depsgraph,
                                 base_mesh_scale_multiplier: float = 1.0) -> Optional[Tuple[str, np.ndarray, Tuple]]:

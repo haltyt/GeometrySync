@@ -147,6 +147,62 @@ def serialize_instance_data(mesh_id: int,
     return header + matrix_bytes
 
 
+def material_params_hash(params: Dict[str, Any]) -> int:
+    """
+    Stable hash of material parameters for change detection
+    (only resend 0x04 when something actually changed).
+    """
+    key = (
+        params['name'],
+        tuple(round(float(c), 5) for c in params['base_color']),
+        round(float(params['metallic']), 5),
+        round(float(params['roughness']), 5),
+        tuple(round(float(c), 5) for c in params['emission']),
+        round(float(params['emission_strength']), 5),
+        round(float(params['alpha']), 5),
+    )
+    return hash(key)
+
+
+def serialize_material(material_id: int, params: Dict[str, Any]) -> bytes:
+    """
+    Serialize PBR material parameters (message type 0x04)
+
+    Binary format (64 bytes, little-endian, colors linear):
+    - material_id        uint32
+    - base_color         float32 x 4 (RGBA)
+    - metallic           float32
+    - roughness          float32
+    - emission           float32 x 3 (RGB)
+    - emission_strength  float32
+    - alpha              float32
+    - texture_flags      uint32 (reserved, 0 — Phase M2)
+    - texture_ids        uint32 x 3 (reserved, 0 — Phase M2)
+
+    Args:
+        material_id: Stable identifier (hash of material name)
+        params: Dict from extractor.extract_material_params()
+
+    Returns:
+        Binary material data ready to send
+    """
+    base_color = params['base_color']
+    emission = params['emission']
+    base_alpha = float(base_color[3]) if len(base_color) > 3 else 1.0
+
+    return struct.pack(
+        '<I 4f f f 3f f f I 3I',
+        material_id & 0xFFFFFFFF,
+        float(base_color[0]), float(base_color[1]), float(base_color[2]), base_alpha,
+        float(params['metallic']),
+        float(params['roughness']),
+        float(emission[0]), float(emission[1]), float(emission[2]),
+        float(params['emission_strength']),
+        float(params['alpha']),
+        0,          # texture_flags (reserved)
+        0, 0, 0)    # texture_ids (reserved)
+
+
 def serialize_custom_attributes(attributes: Dict[str, Any]) -> bytes:
     """
     Serialize custom Geometry Nodes attributes

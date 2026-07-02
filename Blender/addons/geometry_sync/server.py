@@ -166,6 +166,37 @@ class MeshStreamServer:
                 self.client_socket = None
                 return False
 
+    def send_material(self, material_data: bytes) -> bool:
+        """
+        Send PBR material parameters to connected client
+
+        Args:
+            material_data: Binary material data (serializer.serialize_material)
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        with self.lock:
+            if not self.client_socket:
+                return False
+
+            try:
+                # Message format: [type:1byte][length:4bytes][payload]
+                message_type = 0x04  # Material parameters
+                length = len(material_data)
+                header = struct.pack('<B I', message_type, length)  # < = little-endian
+
+                self.client_socket.sendall(header + material_data)
+                return True
+            except Exception as e:
+                print(f"Failed to send material: {e}")
+                try:
+                    self.client_socket.close()
+                except:
+                    pass
+                self.client_socket = None
+                return False
+
     def is_connected(self) -> bool:
         """Check if Unity client is connected"""
         with self.lock:

@@ -39,9 +39,19 @@ namespace GeometrySync
         private MeshReconstructor _reconstructor;
         private GPUInstanceRenderer _instanceRenderer;
 
+        // Material sync (M1: 0x04) — runtime instance so the material asset
+        // on disk is never modified by streamed values
+        private Material _runtimeMaterial;
+        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int LegacyColorId = Shader.PropertyToID("_Color");
+        private static readonly int MetallicId = Shader.PropertyToID("_Metallic");
+        private static readonly int SmoothnessId = Shader.PropertyToID("_Smoothness");
+        private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
+
         // Statistics
         private int _meshUpdateCount;
         private int _instanceUpdateCount;
+        private int _materialUpdateCount;
         private float _lastUpdateTime;
         private float _updateInterval;
         private int _lastVertexCount;
@@ -150,6 +160,74 @@ namespace GeometrySync
                 Debug.Log($"[GeometrySyncManager] Got instance data: {instanceData.InstanceCount} instances for mesh {instanceData.MeshId}");
                 _lastUpdateTime = Time.time;
                 UpdateInstances(instanceData);
+            }
+
+            // Process material parameters (M1: 0x04) — low frequency, not throttled
+            if (_client.TryGetMaterialData(out MaterialData materialData))
+            {
+                ApplyMaterial(materialData);
+            }
+        }
+
+        private void ApplyMaterial(MaterialData data)
+        {
+            try
+            {
+                if (_runtimeMaterial == null)
+                {
+                    // .material instantiates a copy; share it with the
+                    // instance renderer so instanced draws stay in sync
+                    _runtimeMaterial = _meshRenderer.material;
+                    if (_instanceRenderer != null)
+                    {
+                        _instanceRenderer.instanceMaterial = _runtimeMaterial;
+                    }
+                }
+
+                Color baseColor = data.BaseColor;
+                baseColor.a *= Mathf.Clamp01(data.Alpha);
+
+                if (_runtimeMaterial.HasProperty(BaseColorId))
+                {
+                    _runtimeMaterial.SetColor(BaseColorId, baseColor); // URP/Lit
+                }
+                else if (_runtimeMaterial.HasProperty(LegacyColorId))
+                {
+                    _runtimeMaterial.SetColor(LegacyColorId, baseColor); // Built-in/legacy
+                }
+
+                if (_runtimeMaterial.HasProperty(MetallicId))
+                {
+                    _runtimeMaterial.SetFloat(MetallicId, Mathf.Clamp01(data.Metallic));
+                }
+
+                if (_runtimeMaterial.HasProperty(SmoothnessId))
+                {
+                    // Blender roughness → Unity smoothness
+                    _runtimeMaterial.SetFloat(SmoothnessId, 1f - Mathf.Clamp01(data.Roughness));
+                }
+
+                if (_runtimeMaterial.HasProperty(EmissionColorId))
+                {
+                    Color emission = data.Emission * data.EmissionStrength;
+                    _runtimeMaterial.SetColor(EmissionColorId, emission);
+                    if (emission.maxColorComponent > 0f)
+                    {
+                        _runtimeMaterial.EnableKeyword("_EMISSION");
+                    }
+                }
+
+                _materialUpdateCount++;
+
+                if (logMeshUpdates)
+                {
+                    Debug.Log($"Material updated: id={data.MaterialId}, baseColor={baseColor}, " +
+                              $"metallic={data.Metallic:F2}, roughness={data.Roughness:F2}");
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Failed to apply material: {e}");
             }
         }
 
@@ -293,6 +371,7 @@ namespace GeometrySync
 
             GUILayout.Label($"Mesh Updates: {_meshUpdateCount}");
             GUILayout.Label($"Instance Updates: {_instanceUpdateCount}");
+            GUILayout.Label($"Material Updates: {_materialUpdateCount}");
             GUILayout.Label($"Vertices: {_lastVertexCount:N0}");
             GUILayout.Label($"Triangles: {_lastTriangleCount:N0}");
             GUILayout.Label($"Mesh Queue: {(_client?.QueuedMeshCount ?? 0)}");

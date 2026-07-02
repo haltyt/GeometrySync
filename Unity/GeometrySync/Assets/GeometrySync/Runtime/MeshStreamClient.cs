@@ -17,6 +17,7 @@ namespace GeometrySync
         private bool _isRunning;
         private readonly ConcurrentQueue<MeshData> _meshQueue;
         private readonly ConcurrentQueue<InstanceData> _instanceQueue;
+        private readonly ConcurrentQueue<MaterialData> _materialQueue;
         private readonly string _host;
         private readonly int _port;
         private bool _isConnected;
@@ -31,6 +32,7 @@ namespace GeometrySync
             _port = port;
             _meshQueue = new ConcurrentQueue<MeshData>();
             _instanceQueue = new ConcurrentQueue<InstanceData>();
+            _materialQueue = new ConcurrentQueue<MaterialData>();
         }
 
         /// <summary>
@@ -94,12 +96,21 @@ namespace GeometrySync
         }
 
         /// <summary>
+        /// Try to get the next material parameters from the queue (M1: 0x04)
+        /// </summary>
+        public bool TryGetMaterialData(out MaterialData materialData)
+        {
+            return _materialQueue.TryDequeue(out materialData);
+        }
+
+        /// <summary>
         /// Clear the mesh queue
         /// </summary>
         public void ClearQueue()
         {
             while (_meshQueue.TryDequeue(out _)) { }
             while (_instanceQueue.TryDequeue(out _)) { }
+            while (_materialQueue.TryDequeue(out _)) { }
         }
 
         private void ReceiveLoop()
@@ -163,6 +174,10 @@ namespace GeometrySync
 
                             case 0x03: // Delta update (future - reserved)
                                 Debug.LogWarning("Delta updates not yet implemented");
+                                break;
+
+                            case 0x04: // Material parameters (M1)
+                                ProcessMaterialData(payload);
                                 break;
 
                             default:
@@ -253,6 +268,29 @@ namespace GeometrySync
             catch (Exception e)
             {
                 Debug.LogError($"Failed to deserialize instance data: {e}");
+            }
+        }
+
+        private void ProcessMaterialData(byte[] data)
+        {
+            try
+            {
+                MaterialData materialData = MeshDeserializer.DeserializeMaterialData(data);
+                Debug.Log($"[MeshStreamClient] Received material {materialData.MaterialId}: " +
+                          $"baseColor={materialData.BaseColor}, metallic={materialData.Metallic:F2}, " +
+                          $"roughness={materialData.Roughness:F2}");
+
+                _materialQueue.Enqueue(materialData);
+
+                // Only the latest material state matters
+                while (_materialQueue.Count > 2)
+                {
+                    _materialQueue.TryDequeue(out _);
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Failed to deserialize material data: {e}");
             }
         }
 

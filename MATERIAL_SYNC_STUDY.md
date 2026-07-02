@@ -2,6 +2,15 @@
 
 Blender 側のマテリアルをストリーミング先(Unity / Vision Pro)へ同期・適用する方式の検討。
 
+> **実装状況**: Phase M1(Principled BSDF パラメータの 0x04 同期)は**実装済み**。
+> - Blender: `extractor.extract_material_params()` / `serializer.serialize_material()` /
+>   `server.send_material()` / `handlers._sync_materials()`(Material 更新検知+ハッシュ差分送信)
+> - Unity: `MeshDeserializer.DeserializeMaterialData()` → `GeometrySyncManager.ApplyMaterial()`
+>   (ランタイムマテリアルインスタンスへ適用、アセット非破壊。インスタンス描画と共有)
+> - visionOS: `MeshDeserializer.deserializeMaterial()` → `MaterialData.makeMaterial()`
+>   (PhysicallyBasedMaterial、linear→sRGB変換込み)→ 両パイプラインの全Entityへ適用
+> M2(テクスチャ)以降は未実装。
+
 ## 1. 現状
 
 マテリアル情報はプロトコル上いっさい転送していない(頂点 pos/normal/uv のみ)。

@@ -5,7 +5,7 @@ Depsgraph update handlers with throttling for real-time streaming
 import bpy
 import time
 import threading
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 from . import extractor, serializer, server
 
 
@@ -22,12 +22,42 @@ class StreamingScheduler:
         self.enabled = False
         # Cache sent base meshes to avoid resending (mesh_id -> True)
         self.sent_base_meshes: Set[int] = set()
+        # Material sync state (M1: parameter sync via 0x04)
+        self.material_dirty = False
+        self.sent_material_hashes: Dict[int, int] = {}
 
     def mark_dirty(self, obj_name: str):
         """Mark an object as needing update"""
         with self.lock:
             self.dirty = True
             self.dirty_objects.add(obj_name)
+
+    def mark_materials_dirty(self):
+        """Mark materials as needing re-sync (a Material datablock changed)"""
+        with self.lock:
+            self.dirty = True
+            self.material_dirty = True
+
+    def consume_material_dirty(self) -> bool:
+        """Get and clear the material dirty flag"""
+        with self.lock:
+            was_dirty = self.material_dirty
+            self.material_dirty = False
+            return was_dirty
+
+    def material_changed(self, material_id: int, params_hash: int) -> bool:
+        """Check if material params differ from last sent; records new hash"""
+        with self.lock:
+            if self.sent_material_hashes.get(material_id) == params_hash:
+                return False
+            self.sent_material_hashes[material_id] = params_hash
+            return True
+
+    def clear_material_cache(self):
+        """Clear sent-material cache (call when streaming session starts)"""
+        with self.lock:
+            self.sent_material_hashes.clear()
+            self.material_dirty = False
 
     def should_update(self) -> bool:
         """Check if enough time has passed for next update"""
@@ -96,7 +126,10 @@ def depsgraph_update_handler(scene: bpy.types.Scene, depsgraph: bpy.types.Depsgr
 
     # Check which objects were updated
     for update in depsgraph.updates:
-        if isinstance(update.id, bpy.types.Object):
+        if isinstance(update.id, bpy.types.Material):
+            # Material edited (color/roughness/etc.) — re-sync via 0x04
+            scheduler.mark_materials_dirty()
+        elif isinstance(update.id, bpy.types.Object):
             obj = update.id
             if obj.type == 'MESH' and update.is_updated_geometry:
                 # Only mark if object is selected and visible
@@ -129,6 +162,39 @@ def frame_change_handler(scene: bpy.types.Scene):
                 scheduler.mark_dirty(obj.name)
 
 
+def _sync_materials(scheduler: StreamingScheduler,
+                    mesh_server,
+                    depsgraph: bpy.types.Depsgraph,
+                    obj_names: Set[str]):
+    """
+    Extract and send material parameters (0x04) for the given objects.
+    Only sends when the parameter hash differs from the last sent value.
+    """
+    for obj_name in obj_names:
+        obj = bpy.data.objects.get(obj_name)
+        if not obj or obj.type != 'MESH':
+            continue
+
+        try:
+            params = extractor.extract_material_params(obj, depsgraph)
+            if params is None:
+                continue
+
+            material_id = hash(params['name']) & 0xFFFFFFFF
+            params_hash = serializer.material_params_hash(params)
+
+            if not scheduler.material_changed(material_id, params_hash):
+                continue
+
+            material_data = serializer.serialize_material(material_id, params)
+            if mesh_server.send_material(material_data):
+                print(f"Sent material '{params['name']}' (material_id={material_id}) for {obj.name}")
+            else:
+                print(f"Failed to send material for {obj.name}")
+        except Exception as e:
+            print(f"Error syncing material for {obj_name}: {e}")
+
+
 def streaming_timer_function():
     """
     Timer function that handles actual mesh extraction and streaming
@@ -146,10 +212,11 @@ def streaming_timer_function():
     # Performance timing
     frame_start = time.time()
 
-    # Get dirty objects
+    # Get dirty objects and material dirty flag
     dirty_objects = scheduler.get_dirty_objects()
+    material_dirty = scheduler.consume_material_dirty()
 
-    if not dirty_objects:
+    if not dirty_objects and not material_dirty:
         return 0.01
 
     # Get server instance
@@ -242,6 +309,19 @@ def streaming_timer_function():
         except Exception as e:
             print(f"Error processing {obj.name}: {e}")
 
+    # Material sync (M1: 0x04 parameter messages). Dirty objects are always
+    # checked (covers first send after connect); when a Material datablock
+    # changed, also re-check all selected mesh objects — geometry may be
+    # untouched, so they won't be in dirty_objects.
+    material_targets = set(dirty_objects)
+    if material_dirty:
+        material_targets.update(
+            obj.name for obj in context.selected_objects
+            if obj.type == 'MESH' and not obj.hide_viewport and not obj.hide_get())
+
+    if material_targets:
+        _sync_materials(scheduler, mesh_server, depsgraph, material_targets)
+
     return 0.01  # Check again soon
 
 
@@ -250,6 +330,7 @@ def register_handlers():
     scheduler = get_scheduler()
     scheduler.enabled = True
     scheduler.clear_base_mesh_cache()  # Clear cache on new session
+    scheduler.clear_material_cache()   # Re-send materials on new session
 
     # Register depsgraph update handler
     if depsgraph_update_handler not in bpy.app.handlers.depsgraph_update_post:

@@ -49,7 +49,7 @@ final class MetalInstanceRenderer {
     private var entities: [UInt32: ModelEntity] = [:]
     private var activeCount: [UInt32: Int] = [:]
     private var transformStaging: MTLBuffer?
-    private let material: RealityKit.Material
+    private var material: RealityKit.Material
 
     // MARK: - Init
 
@@ -64,6 +64,14 @@ final class MetalInstanceRenderer {
 
     func setContainer(_ entity: Entity) {
         container = entity
+    }
+
+    /// Replace the shared material on all merged-mesh entities (0x04 sync).
+    func setMaterial(_ newMaterial: RealityKit.Material) {
+        material = newMaterial
+        for (_, entity) in entities {
+            entity.model?.materials = [newMaterial]
+        }
     }
 
     // MARK: - Base mesh registration

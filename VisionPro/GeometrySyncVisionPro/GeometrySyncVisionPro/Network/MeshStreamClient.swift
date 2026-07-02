@@ -11,6 +11,7 @@ private let kMaxPayload = 100_000_000  // 100 MB
 private final class StreamContinuations: @unchecked Sendable {
     var mesh: AsyncStream<RawMeshData>.Continuation?
     var instance: AsyncStream<InstanceData>.Continuation?
+    var material: AsyncStream<MaterialData>.Continuation?
 }
 
 /// TCP client for receiving mesh data from Blender.
@@ -45,6 +46,7 @@ final class MeshStreamClient {
 
     let meshStream: AsyncStream<RawMeshData>
     let instanceStream: AsyncStream<InstanceData>
+    let materialStream: AsyncStream<MaterialData>
 
     // MARK: - Private
 
@@ -70,8 +72,14 @@ final class MeshStreamClient {
             instanceCont = continuation
         }
 
+        var materialCont: AsyncStream<MaterialData>.Continuation!
+        self.materialStream = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            materialCont = continuation
+        }
+
         self.continuations.mesh = meshCont
         self.continuations.instance = instanceCont
+        self.continuations.material = materialCont
     }
 
     // MARK: - Connection lifecycle
@@ -93,8 +101,10 @@ final class MeshStreamClient {
         isConnected = false
         continuations.mesh?.finish()
         continuations.instance?.finish()
+        continuations.material?.finish()
         continuations.mesh = nil
         continuations.instance = nil
+        continuations.material = nil
         logger.info("Client disconnected")
     }
 
@@ -318,6 +328,12 @@ final class MeshStreamClient {
 
             case MessageType.delta.rawValue:
                 logger.warning("Delta updates not yet implemented")
+
+            case MessageType.material.rawValue:
+                let materialData = try MeshDeserializer.deserializeMaterial(payload)
+                logger.debug("Material \(materialData.materialId): metallic \(materialData.metallic), roughness \(materialData.roughness)")
+                continuations.material?.yield(materialData)
+                updateCounts(0, 0)
 
             default:
                 logger.warning("Unknown message type: 0x\(String(type, radix: 16))")
