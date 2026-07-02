@@ -147,6 +147,7 @@ Quick lookups and API documentation:
 - [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Technical summary
 - [README.md](README.md) - High-level overview
 - [VISIONPRO_SYNC_STUDY.md](VISIONPRO_SYNC_STUDY.md) - Blender → Vision Pro 同期方式の検討 (vs USDZ streaming)
+- [VISIONPRO_METAL_GPU.md](VISIONPRO_METAL_GPU.md) - visionOS Metal GPU シェーダー対応 (LowLevelMesh + compute)
 
 ### Usage & API
 

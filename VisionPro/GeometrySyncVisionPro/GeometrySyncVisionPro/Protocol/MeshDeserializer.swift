@@ -13,52 +13,75 @@ enum MeshDeserializer {
 
     // MARK: - Mesh deserialization
 
-    /// Deserialize mesh data from binary format.
+    /// Validate the mesh header and return zero-copy slices of the payload.
     ///
     /// Binary format:
     /// - Header: vertexCount (uint32 LE), indexCount (uint32 LE)
     /// - Vertex data: interleaved [x,y,z, nx,ny,nz, u,v] as float32 LE (32 bytes per vertex)
-    /// - Index data: uint32 LE array
-    /// - **Winding order reversal**: indices are swapped (i0, i2, i1) for RealityKit right-hand system
-    static func deserializeMesh(_ data: Data) throws -> MeshData {
+    /// - Index data: uint32 LE array, wire winding (i0, i1, i2)
+    ///
+    /// This is the fast path for the Metal renderer: no per-vertex parsing —
+    /// the slices are uploaded to GPU staging buffers as-is and unpacked by
+    /// compute kernels (including the RealityKit winding reversal).
+    static func rawMesh(from data: Data) throws -> RawMeshData {
         guard data.count >= 8 else {
             throw DeserializerError.dataTooSmall(data.count)
         }
 
-        return try data.withUnsafeBytes { raw in
+        let (vertexCount, indexCount) = data.withUnsafeBytes { raw -> (UInt32, UInt32) in
             let ptr = raw.baseAddress!
             var offset = 0
+            let v = readUInt32(ptr, offset: &offset)
+            let i = readUInt32(ptr, offset: &offset)
+            return (v, i)
+        }
 
-            // Read header
-            let vertexCount = readUInt32(ptr, offset: &offset)
-            let indexCount = readUInt32(ptr, offset: &offset)
+        guard vertexCount <= maxVertexCount, indexCount <= maxIndexCount else {
+            throw DeserializerError.meshTooLarge(
+                vertices: Int(vertexCount), indices: Int(indexCount))
+        }
 
-            // Validate counts
-            guard vertexCount <= maxVertexCount, indexCount <= maxIndexCount else {
-                throw DeserializerError.meshTooLarge(
-                    vertices: Int(vertexCount), indices: Int(indexCount))
-            }
+        let vertexDataSize = Int(vertexCount) * RawMeshData.vertexStride
+        let indexDataSize = Int(indexCount) * 4
+        let expectedTotalSize = 8 + vertexDataSize + indexDataSize
 
-            let expectedVertexDataSize = Int(vertexCount) * 32  // 8 floats × 4 bytes
-            let expectedIndexDataSize = Int(indexCount) * 4
-            let expectedTotalSize = 8 + expectedVertexDataSize + expectedIndexDataSize
+        guard data.count >= expectedTotalSize else {
+            throw DeserializerError.invalidDataSize(
+                expected: expectedTotalSize, got: data.count)
+        }
 
-            guard data.count >= expectedTotalSize else {
-                throw DeserializerError.invalidDataSize(
-                    expected: expectedTotalSize, got: data.count)
-            }
+        let vertexStart = data.startIndex + 8
+        let indexStart = vertexStart + vertexDataSize
 
-            // Allocate arrays
-            let vCount = Int(vertexCount)
-            let iCount = Int(indexCount)
-            var positions = [SIMD3<Float>]()
-            positions.reserveCapacity(vCount)
-            var normals = [SIMD3<Float>]()
-            normals.reserveCapacity(vCount)
-            var uvs = [SIMD2<Float>]()
-            uvs.reserveCapacity(vCount)
+        // Slices, not copies — they retain the payload's backing storage,
+        // which goes straight into Metal staging buffers.
+        return RawMeshData(
+            vertexCount: Int(vertexCount),
+            indexCount: Int(indexCount),
+            vertexData: data[vertexStart..<indexStart],
+            indexData: data[indexStart..<(indexStart + indexDataSize)]
+        )
+    }
 
-            // Read interleaved vertex data
+    /// CPU fallback: expand a validated raw payload into parsed arrays.
+    ///
+    /// Applies the winding order reversal for RealityKit (right-hand system):
+    /// Blender→Unity produces left-hand winding (i0, i1, i2),
+    /// RealityKit needs right-hand winding: (i0, i2, i1).
+    static func expand(_ raw: RawMeshData) -> MeshData {
+        let vCount = raw.vertexCount
+        let iCount = raw.indexCount
+
+        var positions = [SIMD3<Float>]()
+        positions.reserveCapacity(vCount)
+        var normals = [SIMD3<Float>]()
+        normals.reserveCapacity(vCount)
+        var uvs = [SIMD2<Float>]()
+        uvs.reserveCapacity(vCount)
+
+        raw.vertexData.withUnsafeBytes { rawBytes in
+            let ptr = rawBytes.baseAddress!
+            var offset = 0
             for _ in 0..<vCount {
                 let x = readFloat(ptr, offset: &offset)
                 let y = readFloat(ptr, offset: &offset)
@@ -74,11 +97,12 @@ enum MeshDeserializer {
                 let v = readFloat(ptr, offset: &offset)
                 uvs.append(SIMD2<Float>(u, v))
             }
+        }
 
-            // Read indices with winding order reversal for RealityKit (right-hand system)
-            // Blender→Unity produces left-hand winding (i0, i1, i2)
-            // RealityKit needs right-hand winding: (i0, i2, i1)
-            var indices = [UInt32](repeating: 0, count: iCount)
+        var indices = [UInt32](repeating: 0, count: iCount)
+        raw.indexData.withUnsafeBytes { rawBytes in
+            let ptr = rawBytes.baseAddress!
+            var offset = 0
             let triangleCount = iCount / 3
             for tri in 0..<triangleCount {
                 let baseIdx = tri * 3
@@ -90,18 +114,22 @@ enum MeshDeserializer {
                 indices[baseIdx + 2] = i1  // swapped
             }
             // Handle remaining indices (if indexCount is not a multiple of 3)
-            let remaining = iCount - triangleCount * 3
-            for _ in 0..<remaining {
-                indices.append(readUInt32(ptr, offset: &offset))
+            for i in (triangleCount * 3)..<iCount {
+                indices[i] = readUInt32(ptr, offset: &offset)
             }
-
-            return MeshData(
-                positions: positions,
-                normals: normals,
-                uvs: uvs,
-                indices: indices
-            )
         }
+
+        return MeshData(
+            positions: positions,
+            normals: normals,
+            uvs: uvs,
+            indices: indices
+        )
+    }
+
+    /// Deserialize mesh data from binary format (validation + full CPU parse).
+    static func deserializeMesh(_ data: Data) throws -> MeshData {
+        expand(try rawMesh(from: data))
     }
 
     // MARK: - Instance deserialization

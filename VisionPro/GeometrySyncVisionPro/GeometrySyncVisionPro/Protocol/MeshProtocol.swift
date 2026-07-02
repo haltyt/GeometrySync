@@ -1,3 +1,4 @@
+import Foundation
 import simd
 
 /// Mesh data container — mirrors C# MeshData struct
@@ -9,6 +10,24 @@ struct MeshData {
 
     var vertexCount: Int { positions.count }
     var triangleCount: Int { indices.count / 3 }
+}
+
+/// Validated but unparsed mesh payload for the Metal GPU path.
+///
+/// `vertexData` keeps the wire layout (interleaved pos:12 + normal:12 + uv:8,
+/// 32 bytes per vertex) so it can be memcpy'd into a Metal staging buffer and
+/// unpacked by compute kernels. `indexData` keeps the wire winding (i0, i1, i2);
+/// the RealityKit winding reversal happens on the GPU (or in
+/// `MeshDeserializer.expand` on the CPU fallback path).
+struct RawMeshData: Sendable {
+    let vertexCount: Int
+    let indexCount: Int
+    let vertexData: Data
+    let indexData: Data
+
+    var triangleCount: Int { indexCount / 3 }
+
+    static let vertexStride = 32
 }
 
 /// Instance data container — mirrors C# InstanceData struct

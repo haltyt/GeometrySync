@@ -9,7 +9,7 @@ private let kMaxPayload = 100_000_000  // 100 MB
 /// Thread-safe container for AsyncStream continuations.
 /// Separate from @Observable to avoid macro conflicts with nonisolated storage.
 private final class StreamContinuations: @unchecked Sendable {
-    var mesh: AsyncStream<MeshData>.Continuation?
+    var mesh: AsyncStream<RawMeshData>.Continuation?
     var instance: AsyncStream<InstanceData>.Continuation?
 }
 
@@ -43,7 +43,7 @@ final class MeshStreamClient {
 
     // MARK: - Streams (created once in init)
 
-    let meshStream: AsyncStream<MeshData>
+    let meshStream: AsyncStream<RawMeshData>
     let instanceStream: AsyncStream<InstanceData>
 
     // MARK: - Private
@@ -60,7 +60,7 @@ final class MeshStreamClient {
         self.host = host
         self.port = port
 
-        var meshCont: AsyncStream<MeshData>.Continuation!
+        var meshCont: AsyncStream<RawMeshData>.Continuation!
         self.meshStream = AsyncStream(bufferingPolicy: .bufferingNewest(2)) { continuation in
             meshCont = continuation
         }
@@ -302,9 +302,12 @@ final class MeshStreamClient {
         do {
             switch type {
             case MessageType.mesh.rawValue:
-                let meshData = try MeshDeserializer.deserializeMesh(payload)
-                logger.debug("Mesh: \(meshData.vertexCount) verts, \(meshData.triangleCount) tris")
-                continuations.mesh?.yield(meshData)
+                // Header validation + zero-copy slicing only — vertex/index
+                // parsing happens on the GPU (Metal path) or lazily on the
+                // CPU fallback path.
+                let rawMesh = try MeshDeserializer.rawMesh(from: payload)
+                logger.debug("Mesh: \(rawMesh.vertexCount) verts, \(rawMesh.triangleCount) tris")
+                continuations.mesh?.yield(rawMesh)
                 updateCounts(1, 0)
 
             case MessageType.instance.rawValue:

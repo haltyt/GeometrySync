@@ -4,11 +4,20 @@ import os
 
 struct ImmersiveView: View {
     @Environment(AppModel.self) private var appModel
+
+    // Metal GPU path (LowLevelMesh + compute shaders) — primary
+    @State private var metalMeshBuilder: MetalMeshBuilder?
+    @State private var metalInstanceRenderer: MetalInstanceRenderer?
+    @State private var rendererResolved = false
+
+    // CPU fallback path (MeshDescriptor + entity pool)
     @State private var meshBuilder = MeshBuilder()
     @State private var instanceManager = InstanceManager()
+
     @State private var rootEntity = Entity()
     @State private var meshEntity: ModelEntity?
     @State private var latestMeshResource: MeshResource?
+    @State private var latestRawMesh: RawMeshData?
     @State private var lastInstanceApplyTime: CFAbsoluteTime = 0
 
     /// Target FPS for instance updates (lower = smoother, less CPU pressure)
@@ -25,8 +34,8 @@ struct ImmersiveView: View {
         }
         .task(id: appModel.client?.host) {
             guard let client = appModel.client else { return }
-            for await meshData in client.meshStream {
-                applyMesh(meshData)
+            for await rawMesh in client.meshStream {
+                await applyMesh(rawMesh)
             }
         }
         .task(id: appModel.client?.port) {
@@ -36,7 +45,7 @@ struct ImmersiveView: View {
                 let now = CFAbsoluteTimeGetCurrent()
                 let minInterval = 1.0 / targetInstanceFPS
                 if now - lastInstanceApplyTime >= minInterval {
-                    applyInstances(instanceData)
+                    await applyInstances(instanceData)
                     lastInstanceApplyTime = now
                 }
                 await Task.yield()
@@ -44,18 +53,49 @@ struct ImmersiveView: View {
         }
     }
 
+    // MARK: - Renderer selection
+
+    @MainActor
+    private func resolveRenderers() {
+        guard !rendererResolved else { return }
+        rendererResolved = true
+
+        if let context = MetalContext.shared {
+            let builder = MetalMeshBuilder(context: context)
+            let instances = MetalInstanceRenderer(context: context)
+            instances.setContainer(rootEntity)
+            metalMeshBuilder = builder
+            metalInstanceRenderer = instances
+            logger.info("Using Metal GPU pipeline (LowLevelMesh + compute shaders)")
+        } else {
+            logger.warning("Metal unavailable — using CPU MeshDescriptor pipeline")
+        }
+    }
+
     // MARK: - Mesh application
 
     @MainActor
-    private func applyMesh(_ data: MeshData) {
-        guard let resource = meshBuilder.buildOrUpdate(from: data) else { return }
+    private func applyMesh(_ raw: RawMeshData) async {
+        resolveRenderers()
 
-        latestMeshResource = resource
+        if let gpu = metalMeshBuilder {
+            guard let resource = await gpu.buildOrUpdate(from: raw) else { return }
+            latestRawMesh = raw
+            attachOrUpdate(resource, material: gpu.getMaterial())
+        } else {
+            let meshData = MeshDeserializer.expand(raw)
+            guard let resource = meshBuilder.buildOrUpdate(from: meshData) else { return }
+            latestMeshResource = resource
+            attachOrUpdate(resource, material: meshBuilder.getMaterial())
+        }
+    }
 
+    @MainActor
+    private func attachOrUpdate(_ resource: MeshResource, material: RealityKit.Material) {
         if let existing = meshEntity {
             existing.model?.mesh = resource
         } else {
-            let entity = ModelEntity(mesh: resource, materials: [meshBuilder.getMaterial()])
+            let entity = ModelEntity(mesh: resource, materials: [material])
             rootEntity.addChild(entity)
             meshEntity = entity
             logger.info("Created mesh entity")
@@ -65,16 +105,25 @@ struct ImmersiveView: View {
     // MARK: - Instance application
 
     @MainActor
-    private func applyInstances(_ data: InstanceData) {
-        if !instanceManager.hasMesh(data.meshId), let resource = latestMeshResource {
-            instanceManager.registerBaseMesh(meshId: data.meshId, mesh: resource)
-            logger.info("Auto-registered base mesh for meshId \(data.meshId)")
-        }
+    private func applyInstances(_ data: InstanceData) async {
+        resolveRenderers()
 
         if data.instanceCount > 0 {
             meshEntity?.isEnabled = false
         }
 
-        instanceManager.updateInstances(data)
+        if let gpu = metalInstanceRenderer {
+            if !gpu.hasMesh(data.meshId), let raw = latestRawMesh {
+                gpu.registerBaseMesh(meshId: data.meshId, raw: raw)
+                logger.info("Auto-registered base mesh for meshId \(data.meshId)")
+            }
+            await gpu.updateInstances(data)
+        } else {
+            if !instanceManager.hasMesh(data.meshId), let resource = latestMeshResource {
+                instanceManager.registerBaseMesh(meshId: data.meshId, mesh: resource)
+                logger.info("Auto-registered base mesh for meshId \(data.meshId)")
+            }
+            instanceManager.updateInstances(data)
+        }
     }
 }
